@@ -73,7 +73,14 @@ def ffi_version():
 
 def download_ffi(platform, arch, version, output):
     filename = "ffi-%s-%s.zip" % (platform, arch)
-    repo_url = "https://github.com/livekit/rust-sdks/releases/download"
+    # Supertest fork: point at our own GH releases so the patched FFI
+    # binaries (TF_STEREO auto-flag) get picked up. Override at install
+    # time via LIVEKIT_FFI_REPO_URL / LIVEKIT_FFI_VERSION if needed —
+    # useful when the tag suffix differs from the Cargo.toml version
+    # (e.g. ``0.12.52`` in Cargo.toml vs ``0.12.52-stereo.1`` release tag).
+    default_repo_url = "https://github.com/supertest-ai/livekit-rust-sdks/releases/download"
+    repo_url = os.environ.get("LIVEKIT_FFI_REPO_URL", default_repo_url)
+    version = os.environ.get("LIVEKIT_FFI_VERSION", version)
     new_url = "%s/livekit-ffi/v%s/%s" % (repo_url, version, filename)
     old_url = "%s/rust-sdks/livekit-ffi@%s/%s" % (repo_url, version, filename)
 
