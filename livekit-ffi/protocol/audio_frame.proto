@@ -91,6 +91,9 @@ message CaptureAudioFrameRequest {
   required uint64 source_handle = 1;
   required AudioFrameBufferInfo buffer = 2;
   optional uint64 request_async_id = 3;
+  // Appended to the encoded frame holding the buffer's first sample when the
+  // track is published with FRAME_METADATA_FEATURE user data.
+  optional bytes tag = 4;
 }
 message CaptureAudioFrameResponse {
   required uint64 async_id = 1;

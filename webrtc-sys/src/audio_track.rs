@@ -32,11 +32,13 @@ pub mod ffi {
         include!("livekit/media_stream_track.h");
 
         type MediaStreamTrack = crate::media_stream_track::ffi::MediaStreamTrack;
+        type RtpSender = crate::rtp_sender::ffi::RtpSender;
         type CompleteCallback = crate::audio_track::CompleteCallback;
     }
 
     unsafe extern "C++" {
         include!("livekit/audio_track.h");
+        include!("livekit/rtp_sender.h");
 
         type AudioTrack;
         type NativeAudioSink;
@@ -56,10 +58,12 @@ pub mod ffi {
             sample_rate: u32,
             nb_channels: u32,
             nb_frames: usize,
+            tag: &[u8],
             userdata: *const SourceContext,
             on_complete: CompleteCallback,
         ) -> bool;
         fn clear_buffer(self: &AudioTrackSource);
+        fn attach_frame_tags(self: &AudioTrackSource, sender: SharedPtr<RtpSender>);
         fn audio_options(self: &AudioTrackSource) -> AudioSourceOptions;
         fn set_audio_options(self: &AudioTrackSource, options: &AudioSourceOptions);
 

@@ -104,6 +104,7 @@ impl FfiAudioSource {
         capture: proto::CaptureAudioFrameRequest,
     ) -> FfiResult<proto::CaptureAudioFrameResponse> {
         let buffer = capture.buffer;
+        let tag = capture.tag.unwrap_or_default();
 
         let source = self.source.clone();
         let async_id = server.resolve_async_id(capture.request_async_id);
@@ -127,7 +128,7 @@ impl FfiAudioSource {
                         samples_per_channel: buffer.samples_per_channel,
                     };
 
-                    let res = source.capture_frame(&audio_frame).await;
+                    let res = source.capture_frame_with_tag(&audio_frame, &tag).await;
                     if let Err(e) = server.send_event(
                         proto::CaptureAudioFrameCallback {
                             async_id,

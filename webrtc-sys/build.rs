@@ -71,6 +71,7 @@ fn main() {
         "src/media_stream.cpp",
         "src/media_stream_track.cpp",
         "src/audio_track.cpp",
+        "src/audio_frame_tags.cpp",
         "src/video_track.cpp",
         "src/data_channel.cpp",
         "src/jsep.cpp",

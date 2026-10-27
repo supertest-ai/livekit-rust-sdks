@@ -70,6 +70,10 @@ constexpr uint8_t kTagUserData = 0x03;     // value: arbitrary bytes, omitted
                                            // when empty; bounded by the
                                            // remaining trailer budget
                                            // (255 - fixed TLVs - envelope - 2)
+constexpr uint8_t kTagSampleOffset = 0x04;  // value: 2 bytes big-endian uint16,
+                                            // audio only: offset of the tagged
+                                            // sample from the start of the
+                                            // frame, in 48 kHz samples
 
 constexpr size_t kTimestampTlvSize = 10;  // tag + len + 8-byte value
 constexpr size_t kFrameIdTlvSize = 6;     // tag + len + 4-byte value
