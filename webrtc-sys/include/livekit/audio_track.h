@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "api/audio_options.h"
 #include "api/task_queue/task_queue_factory.h"
 #include "common_audio/resampler/include/push_resampler.h"
+#include "livekit/audio_frame_tags.h"
 #include "livekit/helper.h"
 #include "livekit/media_stream_track.h"
 #include "livekit/webrtc.h"
@@ -38,6 +40,7 @@ class AudioTrack;
 class NativeAudioSink;
 class AudioTrackSource;
 class SourceContext;
+class RtpSender;
 
 using CompleteCallback = void (*)(const livekit_ffi::SourceContext*);
 }  // namespace livekit_ffi
@@ -121,10 +124,15 @@ class AudioTrackSource {
                        uint32_t sample_rate,
                        uint32_t number_of_channels,
                        size_t number_of_frames,
+                       rust::Slice<const uint8_t> tag,
                        const SourceContext* ctx,
                        void (*on_complete)(const SourceContext*));
 
     void clear_buffer();
+
+    webrtc::scoped_refptr<AudioFrameTagTransformer> tag_transformer() const {
+      return tag_transformer_;
+    }
 
     // Indicate this is an external audio source (when external_audio_source.patch is applied).
     // This prevents AudioState from sending device audio to streams using this source.
@@ -133,6 +141,18 @@ class AudioTrackSource {
     bool is_external_source() const { return true; }
 
    private:
+    struct PendingTag {
+      int64_t sample;  // per-channel index in the stream of queued samples
+      std::vector<uint8_t> data;
+    };
+
+    // Hands the next 10 ms chunk to the sinks, stamped with its capture time.
+    // Its first `queued_samples` per channel come from buffer_; the rest is
+    // inserted silence.
+    void SendChunk(const int16_t* data,
+                   size_t samples_per_channel,
+                   size_t queued_samples) RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
     mutable webrtc::Mutex mutex_;
     std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter> audio_queue_;
     webrtc::RepeatingTaskHandle audio_task_;
@@ -145,6 +165,13 @@ class AudioTrackSource {
 
     std::vector<int16_t> silence_buffer_;
     std::vector<int16_t> padded_buffer_;
+
+    const webrtc::scoped_refptr<AudioFrameTagTransformer> tag_transformer_;
+    // Capture time of the next chunk; advances by exactly 10 ms per chunk.
+    int64_t next_capture_ms_ RTC_GUARDED_BY(mutex_) = -1;
+    // Per-channel samples that have left buffer_ for the sinks.
+    int64_t sent_samples_ RTC_GUARDED_BY(mutex_) = 0;
+    std::deque<PendingTag> pending_tags_ RTC_GUARDED_BY(mutex_);
 
     int sample_rate_ = 0;
     int num_channels_ = 0;
@@ -169,10 +196,14 @@ class AudioTrackSource {
                      uint32_t sample_rate,
                      uint32_t number_of_channels,
                      size_t number_of_frames,
+                     rust::Slice<const uint8_t> tag,
                      const SourceContext* ctx,
                      CompleteCallback on_complete) const;
 
   void clear_buffer() const;
+
+  // Appends the tags passed to capture_frame to the frames `sender` encodes.
+  void attach_frame_tags(std::shared_ptr<RtpSender> sender) const;
 
   webrtc::scoped_refptr<InternalSource> get() const;
 

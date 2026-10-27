@@ -42,6 +42,7 @@ use crate::{
 use bytes::Bytes;
 use chrono::Utc;
 use libwebrtc::{
+    audio_source::RtcAudioSource,
     native::{create_random_uuid, packet_trailer},
     rtp_parameters::RtpEncodingParameters,
     video_source::RtcVideoSource,
@@ -507,6 +508,16 @@ impl LocalParticipant {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let RtcVideoSource::Native(ref native_source) = video_track.rtc_source() {
                     native_source.set_packet_trailer_handler(handler.clone());
+                }
+            }
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let LocalTrack::Audio(audio_track) = &track {
+            if options.frame_metadata_features.user_data {
+                if let RtcAudioSource::Native(native_source) = audio_track.rtc_source() {
+                    let sender = track.transceiver().unwrap().sender();
+                    native_source.attach_frame_tags(&sender);
                 }
             }
         }

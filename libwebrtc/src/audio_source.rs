@@ -195,6 +195,18 @@ pub mod native {
             self.handle.capture_frame(frame).await
         }
 
+        pub async fn capture_frame_with_tag(
+            &self,
+            frame: &AudioFrame<'_>,
+            tag: &[u8],
+        ) -> Result<(), RtcError> {
+            self.handle.capture_frame_with_tag(frame, tag).await
+        }
+
+        pub fn attach_frame_tags(&self, sender: &crate::rtp_sender::RtpSender) {
+            self.handle.attach_frame_tags(&sender.handle)
+        }
+
         pub fn set_audio_options(&self, options: AudioSourceOptions) {
             self.handle.set_audio_options(options)
         }
