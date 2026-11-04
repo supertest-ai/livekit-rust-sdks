@@ -16,6 +16,7 @@ use cxx::SharedPtr;
 use tokio::sync::oneshot;
 use webrtc_sys::audio_track as sys_at;
 
+use super::rtp_sender::RtpSender;
 use crate::{audio_frame::AudioFrame, audio_source::AudioSourceOptions, RtcError, RtcErrorType};
 
 #[derive(Clone)]
@@ -89,7 +90,54 @@ impl NativeAudioSource {
         self.sys_handle.clear_buffer();
     }
 
+    /// Writes the Opus padding passed to [`capture_frame_with_opus_padding`]
+    /// into the frames `sender` encodes.
+    ///
+    /// [`capture_frame_with_opus_padding`]: Self::capture_frame_with_opus_padding
+    pub fn attach_opus_padding(&self, sender: &RtpSender) {
+        self.sys_handle.attach_opus_padding(sender.sys_handle.clone());
+    }
+
+    /// True while Opus padding passed to [`capture_frame_with_opus_padding`]
+    /// reaches a sender.
+    ///
+    /// [`capture_frame_with_opus_padding`]: Self::capture_frame_with_opus_padding
+    pub fn opus_padding_attached(&self) -> bool {
+        self.sys_handle.opus_padding_attached()
+    }
+
     pub async fn capture_frame(&self, frame: &AudioFrame<'_>) -> Result<(), RtcError> {
+        self.capture(frame, &[]).await
+    }
+
+    /// Like [`capture_frame`], and writes `opus_padding` verbatim as the Opus
+    /// padding (RFC 6716, section 3.2.5) of the encoded frame holding this
+    /// frame's first sample. See
+    /// [`capture_frame_with_opus_padding`](crate::audio_source::native::NativeAudioSource::capture_frame_with_opus_padding)
+    /// for the details.
+    ///
+    /// [`capture_frame`]: Self::capture_frame
+    pub async fn capture_frame_with_opus_padding(
+        &self,
+        frame: &AudioFrame<'_>,
+        opus_padding: &[u8],
+    ) -> Result<(), RtcError> {
+        let invalid = |message: &str| {
+            Err(RtcError { error_type: RtcErrorType::InvalidState, message: message.to_owned() })
+        };
+        if opus_padding.is_empty() {
+            return invalid("Opus padding is empty");
+        }
+        if !self.opus_padding_attached() {
+            return invalid(
+                "Opus padding is not attached to a sender: the source is not published, \
+                 or its track uses end-to-end encryption",
+            );
+        }
+        self.capture(frame, opus_padding).await
+    }
+
+    async fn capture(&self, frame: &AudioFrame<'_>, opus_padding: &[u8]) -> Result<(), RtcError> {
         if self.sample_rate != frame.sample_rate || self.num_channels != frame.num_channels {
             return Err(RtcError {
                 error_type: RtcErrorType::InvalidState,
@@ -134,6 +182,7 @@ impl NativeAudioSource {
                     self.sample_rate,
                     self.num_channels,
                     nb_frames,
+                    opus_padding,
                     std::ptr::null(), // Context is still null - callback won't use it
                     noop_callback,
                 );
@@ -154,7 +203,7 @@ impl NativeAudioSource {
         }
 
         // iterate over chunks of self._queue_size_samples
-        for chunk in frame.data.chunks(self.queue_size_samples as usize) {
+        for (i, chunk) in frame.data.chunks(self.queue_size_samples as usize).enumerate() {
             let nb_frames = chunk.len() / self.num_channels as usize;
             let (tx, rx) = oneshot::channel::<()>();
             let ctx = Box::new(tx);
@@ -167,6 +216,7 @@ impl NativeAudioSource {
                     self.sample_rate,
                     self.num_channels,
                     nb_frames,
+                    if i == 0 { opus_padding } else { &[] },
                     ctx_ptr,
                     sys_at::CompleteCallback(lk_audio_source_complete),
                 ) {

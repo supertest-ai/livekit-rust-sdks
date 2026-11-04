@@ -183,6 +183,7 @@ const CaptureAudioFrameRequest = /*@__PURE__*/ proto2.makeMessageType(
     { no: 1, name: "source_handle", kind: "scalar", T: 4 /* ScalarType.UINT64 */, req: true },
     { no: 2, name: "buffer", kind: "message", T: AudioFrameBufferInfo, req: true },
     { no: 3, name: "request_async_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
+    { no: 4, name: "opus_padding", kind: "scalar", T: 12 /* ScalarType.BYTES */, opt: true },
   ],
 );
 
