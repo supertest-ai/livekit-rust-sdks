@@ -176,10 +176,8 @@ AudioTrackSource::InternalSource::InternalSource(
           std::copy(buffer_.begin(), buffer_.end(), padded_buffer_.begin());
           std::fill(padded_buffer_.begin() + buffer_.size(),
                     padded_buffer_.end(), 0);
-          for (auto sink : sinks_)
-            sink->OnData(padded_buffer_.data(), kBitsPerSample, sample_rate_,
-                         num_channels_, samples10ms / num_channels_);
-
+          SendChunk(padded_buffer_.data(), samples10ms / num_channels_,
+                    buffer_.size() / num_channels_);
           buffer_.clear();
         } else {
           // Always provide a 10ms frame to avoid playout underruns.
