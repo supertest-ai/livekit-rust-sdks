@@ -104,6 +104,7 @@ impl FfiAudioSource {
         capture: proto::CaptureAudioFrameRequest,
     ) -> FfiResult<proto::CaptureAudioFrameResponse> {
         let buffer = capture.buffer;
+        let opus_padding = capture.opus_padding;
 
         let source = self.source.clone();
         let async_id = server.resolve_async_id(capture.request_async_id);
@@ -127,7 +128,12 @@ impl FfiAudioSource {
                         samples_per_channel: buffer.samples_per_channel,
                     };
 
-                    let res = source.capture_frame(&audio_frame).await;
+                    let res = match opus_padding {
+                        Some(ref padding) => {
+                            source.capture_frame_with_opus_padding(&audio_frame, padding).await
+                        }
+                        None => source.capture_frame(&audio_frame).await,
+                    };
                     if let Err(e) = server.send_event(
                         proto::CaptureAudioFrameCallback {
                             async_id,
