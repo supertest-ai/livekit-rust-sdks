@@ -111,10 +111,7 @@ impl NativeAudioSource {
     }
 
     /// Like [`capture_frame`], and writes `opus_padding` verbatim as the Opus
-    /// padding (RFC 6716, section 3.2.5) of the encoded frame holding this
-    /// frame's first sample. See
-    /// [`capture_frame_with_opus_padding`](crate::audio_source::native::NativeAudioSource::capture_frame_with_opus_padding)
-    /// for the details.
+    /// padding of the encoded frame holding this frame's first sample.
     ///
     /// [`capture_frame`]: Self::capture_frame
     pub async fn capture_frame_with_opus_padding(
