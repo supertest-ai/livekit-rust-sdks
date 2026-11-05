@@ -213,11 +213,6 @@ pub mod native {
             self.handle.attach_opus_padding(&sender.handle)
         }
 
-        /// True while Opus padding reaches a sender.
-        pub fn opus_padding_attached(&self) -> bool {
-            self.handle.opus_padding_attached()
-        }
-
         pub fn set_audio_options(&self, options: AudioSourceOptions) {
             self.handle.set_audio_options(options)
         }

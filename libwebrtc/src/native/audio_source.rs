@@ -95,11 +95,6 @@ impl NativeAudioSource {
         self.sys_handle.attach_opus_padding(sender.sys_handle.clone());
     }
 
-    /// True while Opus padding reaches a sender.
-    pub fn opus_padding_attached(&self) -> bool {
-        self.sys_handle.opus_padding_attached()
-    }
-
     pub async fn capture_frame(&self, frame: &AudioFrame<'_>) -> Result<(), RtcError> {
         self.capture(frame, &[]).await
     }
@@ -113,17 +108,19 @@ impl NativeAudioSource {
         frame: &AudioFrame<'_>,
         opus_padding: &[u8],
     ) -> Result<(), RtcError> {
-        let invalid = |message: &str| {
-            Err(RtcError { error_type: RtcErrorType::InvalidState, message: message.to_owned() })
-        };
         if opus_padding.is_empty() {
-            return invalid("Opus padding is empty");
+            return Err(RtcError {
+                error_type: RtcErrorType::InvalidState,
+                message: "Opus padding is empty".to_owned(),
+            });
         }
-        if !self.opus_padding_attached() {
-            return invalid(
-                "Opus padding is not attached to a sender: the source is not published, \
-                 or its track uses end-to-end encryption",
-            );
+        if !self.sys_handle.opus_padding_attached() {
+            return Err(RtcError {
+                error_type: RtcErrorType::InvalidState,
+                message: "Opus padding is not attached to a sender: the source is not published, \
+                          or its track uses end-to-end encryption"
+                    .to_owned(),
+            });
         }
         self.capture(frame, opus_padding).await
     }
