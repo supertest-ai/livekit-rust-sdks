@@ -71,11 +71,12 @@ std::optional<int64_t> OpusPacketDurationMs(std::span<const uint8_t> packet) {
     case 2:
       frames = 2;
       break;
-    default:
+    case 3:
       if (packet.size() < 2 || (packet[1] & 0x3F) == 0) {
         return std::nullopt;
       }
       frames = packet[1] & 0x3F;
+      break;
   }
   const int64_t samples = int64_t{frames} * OpusFrameSamples(packet[0]);
   return (samples + 47) / 48;
