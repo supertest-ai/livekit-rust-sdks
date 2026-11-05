@@ -199,10 +199,7 @@ AudioTrackSource::InternalSource::InternalSource(
 AudioTrackSource::InternalSource::~InternalSource() {
 }
 
-// `data` is null for a chunk of inserted silence. Only queued samples carry
-// Opus padding and advance sent_samples_. Chunks carry a capture time only
-// while Opus padding is attached to a sender; otherwise they are handed on
-// exactly as without it.
+// `data` is null for inserted silence.
 void AudioTrackSource::InternalSource::SendChunk(const int16_t* data,
                                                  size_t samples_per_channel,
                                                  size_t queued_samples) {
@@ -220,10 +217,7 @@ void AudioTrackSource::InternalSource::SendChunk(const int16_t* data,
     return;
   }
 
-  // Strictly increasing by at least 10 ms, so every chunk has its own capture
-  // time, and never behind the clock, so a pause in a source that is not
-  // paced by the queue does not leave capture times behind. Same clock as
-  // WebRTC's, which converts it to NTP for abs-capture-time.
+  // Unique per chunk, and on WebRTC's clock.
   const int64_t capture_ms = std::max(next_capture_ms_, webrtc::TimeMillis());
   next_capture_ms_ = capture_ms + 10;
 

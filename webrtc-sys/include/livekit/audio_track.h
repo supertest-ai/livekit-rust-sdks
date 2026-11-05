@@ -142,13 +142,10 @@ class AudioTrackSource {
 
    private:
     struct PendingPadding {
-      int64_t sample;  // per-channel index in the stream of queued samples
+      int64_t sample;
       std::vector<uint8_t> data;
     };
 
-    // Hands the next 10 ms chunk to the sinks, stamped with its capture time
-    // while Opus padding is attached. Its first `queued_samples` per channel
-    // come from buffer_; the rest is inserted silence.
     void SendChunk(const int16_t* data,
                    size_t samples_per_channel,
                    size_t queued_samples) RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
@@ -167,9 +164,7 @@ class AudioTrackSource {
     std::vector<int16_t> padded_buffer_;
 
     const webrtc::scoped_refptr<OpusPaddingTransformer> padding_transformer_;
-    // Earliest capture time of the next chunk: 10 ms after the previous one.
     int64_t next_capture_ms_ RTC_GUARDED_BY(mutex_) = -1;
-    // Per-channel samples that have left buffer_ for the sinks.
     int64_t sent_samples_ RTC_GUARDED_BY(mutex_) = 0;
     std::deque<PendingPadding> pending_padding_ RTC_GUARDED_BY(mutex_);
 
@@ -202,11 +197,8 @@ class AudioTrackSource {
 
   void clear_buffer() const;
 
-  // Writes the Opus padding passed to capture_frame into the frames `sender`
-  // encodes.
   void attach_opus_padding(std::shared_ptr<RtpSender> sender) const;
 
-  // True while Opus padding passed to capture_frame reaches a sender.
   bool opus_padding_attached() const;
 
   webrtc::scoped_refptr<InternalSource> get() const;

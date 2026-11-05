@@ -90,18 +90,12 @@ impl NativeAudioSource {
         self.sys_handle.clear_buffer();
     }
 
-    /// Writes the Opus padding passed to [`capture_frame_with_opus_padding`]
-    /// into the frames `sender` encodes.
-    ///
-    /// [`capture_frame_with_opus_padding`]: Self::capture_frame_with_opus_padding
+    /// Writes Opus padding into the frames `sender` encodes.
     pub fn attach_opus_padding(&self, sender: &RtpSender) {
         self.sys_handle.attach_opus_padding(sender.sys_handle.clone());
     }
 
-    /// True while Opus padding passed to [`capture_frame_with_opus_padding`]
-    /// reaches a sender.
-    ///
-    /// [`capture_frame_with_opus_padding`]: Self::capture_frame_with_opus_padding
+    /// True while Opus padding reaches a sender.
     pub fn opus_padding_attached(&self) -> bool {
         self.sys_handle.opus_padding_attached()
     }
