@@ -91,10 +91,8 @@ message CaptureAudioFrameRequest {
   required uint64 source_handle = 1;
   required AudioFrameBufferInfo buffer = 2;
   optional uint64 request_async_id = 3;
-  // Written verbatim as the Opus padding (RFC 6716, section 3.2.5) of the
-  // encoded frame holding the buffer's first sample; see
-  // NativeAudioSource::capture_frame_with_opus_padding. The capture fails if
-  // it is empty or the source's track is not published.
+  // Written verbatim as the Opus padding of the encoded frame holding the
+  // buffer's first sample.
   optional bytes opus_padding = 4;
 }
 message CaptureAudioFrameResponse {
