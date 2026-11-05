@@ -18,7 +18,7 @@
 
 #include <stdint.h>
 
-#include <map>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -30,12 +30,15 @@
 namespace livekit_ffi {
 
 // Writes caller-supplied bytes verbatim as the Opus padding (RFC 6716,
-// 3.2.5) of encoded frames. Padding is keyed by the capture time of its 10 ms
-// chunk; a frame stamped C holds the chunks in [C, C + duration).
+// 3.2.5) of the frames one sender encodes. The source records every 10 ms
+// chunk it sends; a frame holds the chunk stamped with its capture time and
+// the ones after it, as many as its duration covers.
 class OpusPaddingTransformer : public webrtc::FrameTransformerInterface {
  public:
-  bool IsAttached();
-  void AddPadding(int64_t chunk_capture_ms, std::vector<uint8_t> padding);
+  // False once the sender has stopped sending.
+  bool IsActive();
+
+  void AddChunk(int64_t capture_ms, std::vector<uint8_t> padding);
 
   void Transform(
       std::unique_ptr<webrtc::TransformableFrameInterface> frame) override;
@@ -48,10 +51,16 @@ class OpusPaddingTransformer : public webrtc::FrameTransformerInterface {
   void UnregisterTransformedFrameSinkCallback(uint32_t ssrc) override;
 
  private:
+  struct Chunk {
+    int64_t capture_ms;
+    std::vector<uint8_t> padding;
+  };
+
   webrtc::Mutex mutex_;
   webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback_
       RTC_GUARDED_BY(mutex_);
-  std::map<int64_t, std::vector<uint8_t>> padding_ RTC_GUARDED_BY(mutex_);
+  bool unregistered_ RTC_GUARDED_BY(mutex_) = false;
+  std::deque<Chunk> chunks_ RTC_GUARDED_BY(mutex_);
   // Large frames are sent as plain Opus even with RED.
   std::optional<uint8_t> red_payload_type_ RTC_GUARDED_BY(mutex_);
 };

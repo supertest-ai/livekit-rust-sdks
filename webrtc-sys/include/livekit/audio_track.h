@@ -29,6 +29,7 @@
 #include "livekit/media_stream_track.h"
 #include "livekit/webrtc.h"
 #include "pc/local_audio_source.h"
+#include "rtc_base/ref_counted_object.h"
 #include "rtc_base/synchronization/mutex.h"
 #include "api/task_queue/task_queue_base.h"
 #include "rtc_base/task_utils/repeating_task.h"
@@ -130,9 +131,8 @@ class AudioTrackSource {
 
     void clear_buffer();
 
-    webrtc::scoped_refptr<OpusPaddingTransformer> padding_transformer() const {
-      return padding_transformer_;
-    }
+    webrtc::scoped_refptr<OpusPaddingTransformer> AddPaddingTransformer();
+    bool HasActivePaddingTransformer();
 
     // Indicate this is an external audio source (when external_audio_source.patch is applied).
     // This prevents AudioState from sending device audio to streams using this source.
@@ -147,8 +147,14 @@ class AudioTrackSource {
     };
 
     void SendChunk(const int16_t* data,
+                   int sample_rate,
+                   size_t number_of_channels,
                    size_t samples_per_channel,
                    size_t queued_samples) RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+    // Drops transformers whose sender is gone; returns the active ones.
+    using PaddingTransformer = webrtc::RefCountedObject<OpusPaddingTransformer>;
+    std::vector<webrtc::scoped_refptr<PaddingTransformer>>
+    ActivePaddingTransformers() RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
     mutable webrtc::Mutex mutex_;
     std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter> audio_queue_;
@@ -163,7 +169,8 @@ class AudioTrackSource {
     std::vector<int16_t> silence_buffer_;
     std::vector<int16_t> padded_buffer_;
 
-    const webrtc::scoped_refptr<OpusPaddingTransformer> padding_transformer_;
+    std::vector<webrtc::scoped_refptr<PaddingTransformer>> padding_transformers_
+        RTC_GUARDED_BY(mutex_);
     int64_t next_capture_ms_ RTC_GUARDED_BY(mutex_) = -1;
     int64_t sent_samples_ RTC_GUARDED_BY(mutex_) = 0;
     std::deque<PendingPadding> pending_padding_ RTC_GUARDED_BY(mutex_);
