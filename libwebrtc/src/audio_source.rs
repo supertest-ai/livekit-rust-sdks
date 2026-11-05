@@ -195,6 +195,24 @@ pub mod native {
             self.handle.capture_frame(frame).await
         }
 
+        /// Like [`capture_frame`](Self::capture_frame), and writes
+        /// `opus_padding` verbatim as the Opus padding of the encoded frame
+        /// holding this frame's first sample. Its size is not limited, but
+        /// packets much larger than ~1200 bytes may be dropped.
+        pub async fn capture_frame_with_opus_padding(
+            &self,
+            frame: &AudioFrame<'_>,
+            opus_padding: &[u8],
+        ) -> Result<(), RtcError> {
+            self.handle.capture_frame_with_opus_padding(frame, opus_padding).await
+        }
+
+        /// Writes Opus padding into the frames `sender` encodes. Done on
+        /// publish unless the room uses E2EE.
+        pub fn attach_opus_padding(&self, sender: &crate::rtp_sender::RtpSender) {
+            self.handle.attach_opus_padding(&sender.handle)
+        }
+
         pub fn set_audio_options(&self, options: AudioSourceOptions) {
             self.handle.set_audio_options(options)
         }
