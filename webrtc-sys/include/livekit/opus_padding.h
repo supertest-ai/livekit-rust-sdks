@@ -29,25 +29,12 @@
 
 namespace livekit_ffi {
 
-// Sender-side transformer that writes caller-supplied bytes into the Opus
-// padding (RFC 6716, section 3.2.5) of encoded audio frames. The bytes are
-// written verbatim; the audio data is untouched, so any Opus decoder decodes
-// the frame exactly as it would without the padding. Frames without padding
-// to write are forwarded unchanged.
-//
-// While attached, the audio source stamps every 10 ms chunk it hands to
-// WebRTC with a capture time at least 10 ms after the previous chunk's, and
-// registers padding under the capture time of the chunk holding the frame's
-// first sample. The audio coding module labels each encoded frame with the
-// capture time of its first chunk, and the frame's duration is read from its
-// Opus TOC byte, so a frame stamped C holds the chunks in [C, C + duration).
+// Writes caller-supplied bytes verbatim as the Opus padding (RFC 6716,
+// 3.2.5) of encoded frames. Padding is keyed by the capture time of its 10 ms
+// chunk; a frame stamped C holds the chunks in [C, C + duration).
 class OpusPaddingTransformer : public webrtc::FrameTransformerInterface {
  public:
-  // True while attached to a sender, i.e. while padding reaches the wire.
   bool IsAttached();
-
-  // Registers `padding` for the chunk stamped `chunk_capture_ms`. `padding`
-  // must not be empty.
   void AddPadding(int64_t chunk_capture_ms, std::vector<uint8_t> padding);
 
   void Transform(
@@ -64,11 +51,8 @@ class OpusPaddingTransformer : public webrtc::FrameTransformerInterface {
   webrtc::Mutex mutex_;
   webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback_
       RTC_GUARDED_BY(mutex_);
-  // Keyed by chunk capture time (ms).
   std::map<int64_t, std::vector<uint8_t>> padding_ RTC_GUARDED_BY(mutex_);
-  // The RED encoder sends a frame too large for RED as plain Opus under the
-  // Opus payload type; the RED payload type tells the two apart. Learned from
-  // the first frame that can only be RED.
+  // Large frames are sent as plain Opus even with RED.
   std::optional<uint8_t> red_payload_type_ RTC_GUARDED_BY(mutex_);
 };
 

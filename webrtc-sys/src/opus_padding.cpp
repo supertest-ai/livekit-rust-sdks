@@ -27,8 +27,7 @@ namespace livekit_ffi {
 
 namespace {
 
-// AudioEncoderCopyRed sends an Opus packet of this size or more as plain Opus
-// rather than wrapping it in RED.
+// AudioEncoderCopyRed sends larger packets as plain Opus.
 constexpr size_t kRedMaxPrimarySize = 1024;
 
 // Window used to drop padding for a frame whose duration is unknown.
@@ -59,8 +58,6 @@ int OpusFrameSamples(uint8_t toc) {
   return kSamples[config & 3];
 }
 
-// Duration of an Opus packet in ms, rounded up, or nullopt if it is not a
-// valid Opus packet.
 std::optional<int64_t> OpusPacketDurationMs(std::span<const uint8_t> packet) {
   if (packet.empty()) {
     return std::nullopt;
@@ -84,9 +81,7 @@ std::optional<int64_t> OpusPacketDurationMs(std::span<const uint8_t> packet) {
   return (samples + 47) / 48;
 }
 
-// Offset of the primary block in a RED payload (RFC 2198), or nullopt if the
-// payload is malformed. The primary block comes last and has no length field,
-// so it can grow without touching the RED headers.
+// Offset of the primary block in a RED payload (RFC 2198).
 std::optional<size_t> RedPrimaryOffset(std::span<const uint8_t> red) {
   size_t pos = 0;
   size_t redundant_bytes = 0;
@@ -111,11 +106,7 @@ std::optional<size_t> RedPrimaryOffset(std::span<const uint8_t> red) {
   return primary;
 }
 
-// Appends `packet` to `out` with `padding` as its Opus padding (RFC 6716,
-// 3.2.5): the packet is rewritten to code 3 with the padding flag set and the
-// padding length, and `padding` follows the frame data. The frame data itself
-// is copied unchanged. Returns false, appending nothing, if `packet` already
-// carries padding.
+// Rewrites `packet` to code 3 with `padding`. False if it already has padding.
 bool AppendPaddedOpusPacket(std::span<const uint8_t> packet,
                             const std::vector<uint8_t>& padding,
                             std::vector<uint8_t>* out) {
@@ -130,8 +121,7 @@ bool AppendPaddedOpusPacket(std::span<const uint8_t> packet,
     count_byte = packet[1] | 0x40;
     rest = packet.subspan(2);
   } else {
-    // Code 0: one frame. Code 1: two equal frames (CBR). Code 2: two frames,
-    // the first one's length leading the data, as code 3 VBR expects.
+    // Code 2 already leads with the first frame's length, as code 3 VBR does.
     count_byte = (code == 0 ? 1 : 2) | (code == 2 ? 0x80 : 0) | 0x40;
     rest = packet.subspan(1);
   }
@@ -170,7 +160,6 @@ void OpusPaddingTransformer::Transform(
     std::unique_ptr<webrtc::TransformableFrameInterface> frame) {
   webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback;
   std::optional<std::vector<uint8_t>> padding;
-  // Why the padding, if any, cannot be written into this frame.
   const char* skip_reason = nullptr;
   size_t opus_offset = 0;
   const std::span<const uint8_t> data = frame->GetData();
@@ -207,8 +196,7 @@ void OpusPaddingTransformer::Transform(
       }
 
       const int64_t capture_ms = capture_time->ms();
-      // Padding before this frame belongs to frames the encoder never
-      // emitted (e.g. DTX).
+      // Earlier padding belongs to frames never sent (e.g. DTX).
       padding_.erase(padding_.begin(), padding_.lower_bound(capture_ms));
       auto end = padding_.lower_bound(capture_ms + duration_ms.value_or(kChunkMs));
       if (padding_.begin() != end) {
