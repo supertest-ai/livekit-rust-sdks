@@ -196,28 +196,9 @@ pub mod native {
         }
 
         /// Like [`capture_frame`](Self::capture_frame), and writes
-        /// `opus_padding` verbatim as the Opus padding (RFC 6716, section
-        /// 3.2.5) of the encoded frame holding this frame's first sample.
-        ///
-        /// Opus decoders skip padding, so the frame decodes exactly as it
-        /// would without it. The bytes should be a valid extension sequence
-        /// per draft-ietf-mlcodec-opus-extension, e.g. `0xF0` (experimental
-        /// extension ID 120, extending to the end of the padding) followed by
-        /// the data.
-        ///
-        /// Returns an error and captures nothing if `opus_padding` is empty,
-        /// or if the source is not attached to a sender (see
-        /// [`attach_opus_padding`](Self::attach_opus_padding)). After that,
-        /// the padding is dropped with a warning in the log if the encoded
-        /// frame is not Opus (or RED carrying Opus) or already has padding,
-        /// and without one if [`clear_buffer`](Self::clear_buffer) discards
-        /// the frame. If several frames' padding falls into one encoded
-        /// frame, the first one's is written. With RED, only the primary
-        /// encoding carries the padding.
-        ///
-        /// The padding's size is not limited. The encoded frame and its
-        /// padding are sent as one RTP packet, and packets much larger than
-        /// about 1200 bytes risk being dropped by the network or the SFU.
+        /// `opus_padding` verbatim as the Opus padding of the encoded frame
+        /// holding this frame's first sample. Its size is not limited, but
+        /// packets much larger than ~1200 bytes may be dropped.
         pub async fn capture_frame_with_opus_padding(
             &self,
             frame: &AudioFrame<'_>,

@@ -456,10 +456,8 @@ export declare class CaptureAudioFrameRequest extends Message<CaptureAudioFrameR
   requestAsyncId?: bigint;
 
   /**
-   * Written verbatim as the Opus padding (RFC 6716, section 3.2.5) of the
-   * encoded frame holding the buffer's first sample; see
-   * NativeAudioSource::capture_frame_with_opus_padding. The capture fails if
-   * it is empty or the source's track is not published.
+   * Written verbatim as the Opus padding of the encoded frame holding the
+   * buffer's first sample.
    *
    * @generated from field: optional bytes opus_padding = 4;
    */
