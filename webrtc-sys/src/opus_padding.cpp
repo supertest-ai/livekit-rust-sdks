@@ -16,11 +16,11 @@
 
 #include "livekit/opus_padding.h"
 
-#include <cctype>
+#include <algorithm>
 #include <span>
 #include <string>
 
-#include "rtc_base/checks.h"
+#include "absl/strings/match.h"
 #include "rtc_base/logging.h"
 
 namespace livekit_ffi {
@@ -30,19 +30,10 @@ namespace {
 // AudioEncoderCopyRed sends larger packets as plain Opus.
 constexpr size_t kRedMaxPrimarySize = 1024;
 
-// Window used to drop padding for a frame whose duration is unknown.
 constexpr int64_t kChunkMs = 10;
 
-bool MimeIs(const std::string& mime, const char* expected) {
-  size_t i = 0;
-  for (; expected[i] != '\0'; ++i) {
-    if (i >= mime.size() || std::tolower(static_cast<unsigned char>(mime[i])) !=
-                                expected[i]) {
-      return false;
-    }
-  }
-  return i == mime.size();
-}
+// Bounds the chunks kept while no frames arrive, e.g. before negotiation.
+constexpr size_t kMaxChunks = 1000;
 
 // Samples per Opus frame at 48 kHz, from the TOC byte (RFC 6716, 3.1).
 int OpusFrameSamples(uint8_t toc) {
@@ -142,25 +133,33 @@ bool AppendPaddedOpusPacket(std::span<const uint8_t> packet,
 
 }  // namespace
 
-bool OpusPaddingTransformer::IsAttached() {
+bool OpusPaddingTransformer::IsActive() {
   webrtc::MutexLock lock(&mutex_);
-  return callback_ != nullptr;
+  return !unregistered_;
 }
 
-void OpusPaddingTransformer::AddPadding(int64_t chunk_capture_ms,
-                                        std::vector<uint8_t> padding) {
-  RTC_DCHECK(!padding.empty());
-  webrtc::MutexLock lock(&mutex_);
-  if (!callback_) {
-    return;
+void OpusPaddingTransformer::AddChunk(int64_t capture_ms,
+                                      std::vector<uint8_t> padding) {
+  bool dropped = false;
+  {
+    webrtc::MutexLock lock(&mutex_);
+    if (chunks_.size() >= kMaxChunks) {
+      dropped = !chunks_.front().padding.empty();
+      chunks_.pop_front();
+    }
+    chunks_.push_back({capture_ms, std::move(padding)});
   }
-  padding_.emplace(chunk_capture_ms, std::move(padding));
+  if (dropped) {
+    RTC_LOG(LS_WARNING) << "Dropping Opus padding: no frame was encoded";
+  }
 }
 
 void OpusPaddingTransformer::Transform(
     std::unique_ptr<webrtc::TransformableFrameInterface> frame) {
   webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback;
-  std::optional<std::vector<uint8_t>> padding;
+  std::vector<uint8_t> padding;
+  int unsent = 0;
+  int superseded = 0;
   const char* skip_reason = nullptr;
   size_t opus_offset = 0;
   const std::span<const uint8_t> data = frame->GetData();
@@ -169,8 +168,8 @@ void OpusPaddingTransformer::Transform(
   {
     webrtc::MutexLock lock(&mutex_);
     callback = callback_;
-    if (capture_time.has_value()) {
-      if (MimeIs(mime, "audio/red")) {
+    if (capture_time.has_value() && !chunks_.empty()) {
+      if (absl::EqualsIgnoreCase(mime, "audio/red")) {
         if (!red_payload_type_ && data.size() < kRedMaxPrimarySize) {
           red_payload_type_ = frame->GetPayloadType();
         }
@@ -184,7 +183,7 @@ void OpusPaddingTransformer::Transform(
             skip_reason = "malformed RED payload";
           }
         }
-      } else if (!MimeIs(mime, "audio/opus")) {
+      } else if (!absl::EqualsIgnoreCase(mime, "audio/opus")) {
         skip_reason = "the codec is not Opus";
       }
 
@@ -196,25 +195,43 @@ void OpusPaddingTransformer::Transform(
         }
       }
 
+      // Chunks before this frame's first one were not sent (e.g. DTX).
       const int64_t capture_ms = capture_time->ms();
-      // Earlier padding belongs to frames never sent (e.g. DTX).
-      padding_.erase(padding_.begin(), padding_.lower_bound(capture_ms));
-      auto end = padding_.lower_bound(capture_ms + duration_ms.value_or(kChunkMs));
-      if (padding_.begin() != end) {
-        // One padding per frame: the first wins.
-        padding = std::move(padding_.begin()->second);
-        padding_.erase(padding_.begin(), end);
+      while (!chunks_.empty() && chunks_.front().capture_ms < capture_ms) {
+        unsent += !chunks_.front().padding.empty();
+        chunks_.pop_front();
+      }
+      if (!chunks_.empty() && chunks_.front().capture_ms == capture_ms) {
+        const int64_t n =
+            std::max<int64_t>(1, (duration_ms.value_or(kChunkMs) + kChunkMs - 1) /
+                                     kChunkMs);
+        for (int64_t i = 0; i < n && !chunks_.empty(); ++i) {
+          std::vector<uint8_t>& p = chunks_.front().padding;
+          if (padding.empty()) {
+            padding = std::move(p);
+          } else {
+            superseded += !p.empty();
+          }
+          chunks_.pop_front();
+        }
       }
     }
   }
 
-  if (padding.has_value()) {
+  if (unsent) {
+    RTC_LOG(LS_WARNING) << "Dropping Opus padding of " << unsent
+                        << " chunk(s): no sent frame matched them";
+  }
+  if (superseded) {
+    RTC_LOG(LS_WARNING) << "Dropping Opus padding of " << superseded
+                        << " chunk(s): an earlier chunk's fills their frame";
+  }
+  if (!padding.empty()) {
     std::vector<uint8_t> padded;
     if (!skip_reason) {
-      padded.reserve(data.size() + padding->size() + 3 +
-                     padding->size() / 254);
+      padded.reserve(data.size() + padding.size() + 3 + padding.size() / 254);
       padded.assign(data.begin(), data.begin() + opus_offset);
-      if (!AppendPaddedOpusPacket(data.subspan(opus_offset), *padding,
+      if (!AppendPaddedOpusPacket(data.subspan(opus_offset), padding,
                                   &padded)) {
         skip_reason = "the Opus packet already carries padding";
       }
@@ -235,6 +252,8 @@ void OpusPaddingTransformer::RegisterTransformedFrameCallback(
     webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback) {
   webrtc::MutexLock lock(&mutex_);
   callback_ = callback;
+  unregistered_ = false;
+  red_payload_type_.reset();
 }
 
 void OpusPaddingTransformer::RegisterTransformedFrameSinkCallback(
@@ -246,7 +265,9 @@ void OpusPaddingTransformer::RegisterTransformedFrameSinkCallback(
 void OpusPaddingTransformer::UnregisterTransformedFrameCallback() {
   webrtc::MutexLock lock(&mutex_);
   callback_ = nullptr;
-  padding_.clear();
+  unregistered_ = true;
+  chunks_.clear();
+  red_payload_type_.reset();
 }
 
 void OpusPaddingTransformer::UnregisterTransformedFrameSinkCallback(
