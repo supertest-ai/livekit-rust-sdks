@@ -532,8 +532,7 @@ impl LocalParticipant {
             }
         }
 
-        // Not with E2EE: the sender has a single frame transformer, and the
-        // frame cryptor takes it.
+        // E2EE's frame cryptor uses the sender's only frame transformer.
         #[cfg(not(target_arch = "wasm32"))]
         if let LocalTrack::Audio(audio_track) = &track {
             if self.local.encryption_type == EncryptionType::None {

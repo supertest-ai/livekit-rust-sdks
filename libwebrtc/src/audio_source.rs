@@ -207,17 +207,13 @@ pub mod native {
             self.handle.capture_frame_with_opus_padding(frame, opus_padding).await
         }
 
-        /// Writes the Opus padding passed to
-        /// [`capture_frame_with_opus_padding`](Self::capture_frame_with_opus_padding)
-        /// into the frames `sender` encodes. Publishing a track from this
-        /// source does this, unless the room uses end-to-end encryption.
+        /// Writes Opus padding into the frames `sender` encodes. Done on
+        /// publish unless the room uses E2EE.
         pub fn attach_opus_padding(&self, sender: &crate::rtp_sender::RtpSender) {
             self.handle.attach_opus_padding(&sender.handle)
         }
 
-        /// True while Opus padding passed to
-        /// [`capture_frame_with_opus_padding`](Self::capture_frame_with_opus_padding)
-        /// reaches a sender.
+        /// True while Opus padding reaches a sender.
         pub fn opus_padding_attached(&self) -> bool {
             self.handle.opus_padding_attached()
         }
