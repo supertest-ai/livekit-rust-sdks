@@ -455,6 +455,14 @@ export declare class CaptureAudioFrameRequest extends Message<CaptureAudioFrameR
    */
   requestAsyncId?: bigint;
 
+  /**
+   * Written verbatim as the Opus padding of the encoded frame holding the
+   * buffer's first sample.
+   *
+   * @generated from field: optional bytes opus_padding = 4;
+   */
+  opusPadding?: Uint8Array;
+
   constructor(data?: PartialMessage<CaptureAudioFrameRequest>);
 
   static readonly runtime: typeof proto2;

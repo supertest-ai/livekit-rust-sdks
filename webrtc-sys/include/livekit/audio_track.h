@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -23,10 +24,12 @@
 #include "api/audio_options.h"
 #include "api/task_queue/task_queue_factory.h"
 #include "common_audio/resampler/include/push_resampler.h"
+#include "livekit/opus_padding.h"
 #include "livekit/helper.h"
 #include "livekit/media_stream_track.h"
 #include "livekit/webrtc.h"
 #include "pc/local_audio_source.h"
+#include "rtc_base/ref_counted_object.h"
 #include "rtc_base/synchronization/mutex.h"
 #include "api/task_queue/task_queue_base.h"
 #include "rtc_base/task_utils/repeating_task.h"
@@ -38,6 +41,7 @@ class AudioTrack;
 class NativeAudioSink;
 class AudioTrackSource;
 class SourceContext;
+class RtpSender;
 
 using CompleteCallback = void (*)(const livekit_ffi::SourceContext*);
 }  // namespace livekit_ffi
@@ -121,10 +125,14 @@ class AudioTrackSource {
                        uint32_t sample_rate,
                        uint32_t number_of_channels,
                        size_t number_of_frames,
+                       rust::Slice<const uint8_t> opus_padding,
                        const SourceContext* ctx,
                        void (*on_complete)(const SourceContext*));
 
     void clear_buffer();
+
+    webrtc::scoped_refptr<OpusPaddingTransformer> AddPaddingTransformer();
+    bool HasActivePaddingTransformer();
 
     // Indicate this is an external audio source (when external_audio_source.patch is applied).
     // This prevents AudioState from sending device audio to streams using this source.
@@ -133,6 +141,21 @@ class AudioTrackSource {
     bool is_external_source() const { return true; }
 
    private:
+    struct PendingPadding {
+      int64_t sample;
+      std::vector<uint8_t> data;
+    };
+
+    void SendChunk(const int16_t* data,
+                   int sample_rate,
+                   size_t number_of_channels,
+                   size_t samples_per_channel,
+                   size_t queued_samples) RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+    // Drops transformers whose sender is gone; returns the active ones.
+    using PaddingTransformer = webrtc::RefCountedObject<OpusPaddingTransformer>;
+    std::vector<webrtc::scoped_refptr<PaddingTransformer>>
+    ActivePaddingTransformers() RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
     mutable webrtc::Mutex mutex_;
     std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter> audio_queue_;
     webrtc::RepeatingTaskHandle audio_task_;
@@ -145,6 +168,12 @@ class AudioTrackSource {
 
     std::vector<int16_t> silence_buffer_;
     std::vector<int16_t> padded_buffer_;
+
+    std::vector<webrtc::scoped_refptr<PaddingTransformer>> padding_transformers_
+        RTC_GUARDED_BY(mutex_);
+    int64_t next_capture_ms_ RTC_GUARDED_BY(mutex_) = -1;
+    int64_t sent_samples_ RTC_GUARDED_BY(mutex_) = 0;
+    std::deque<PendingPadding> pending_padding_ RTC_GUARDED_BY(mutex_);
 
     int sample_rate_ = 0;
     int num_channels_ = 0;
@@ -169,10 +198,15 @@ class AudioTrackSource {
                      uint32_t sample_rate,
                      uint32_t number_of_channels,
                      size_t number_of_frames,
+                     rust::Slice<const uint8_t> opus_padding,
                      const SourceContext* ctx,
                      CompleteCallback on_complete) const;
 
   void clear_buffer() const;
+
+  void attach_opus_padding(std::shared_ptr<RtpSender> sender) const;
+
+  bool opus_padding_attached() const;
 
   webrtc::scoped_refptr<InternalSource> get() const;
 
