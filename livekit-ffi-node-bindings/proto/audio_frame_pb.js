@@ -500,6 +500,7 @@ const AudioFrameReceived = /*@__PURE__*/ proto2.makeMessageType(
   "livekit.proto.AudioFrameReceived",
   () => [
     { no: 1, name: "frame", kind: "message", T: OwnedAudioFrameBuffer, req: true },
+    { no: 2, name: "opus_padding", kind: "scalar", T: 12 /* ScalarType.BYTES */, repeated: true },
   ],
 );
 

@@ -19,7 +19,10 @@ use std::{
 
 use futures_util::Stream;
 use livekit::{
-    webrtc::{audio_stream::native::NativeAudioStream, prelude::AudioFrame},
+    webrtc::{
+        audio_stream::native::{NativeReceivedAudioStream, ReceivedAudioFrame},
+        prelude::AudioFrame,
+    },
     AudioFilterAudioStream,
 };
 
@@ -28,17 +31,19 @@ pub trait AudioStream: Stream<Item = AudioFrame<'static>> + Send + Sync + Unpin 
 }
 
 pub enum AudioStreamKind {
-    Native(NativeAudioStream),
+    Native(NativeReceivedAudioStream),
     Filtered(AudioFilterAudioStream),
 }
 
 impl Stream for AudioStreamKind {
-    type Item = AudioFrame<'static>;
+    type Item = ReceivedAudioFrame;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         match self.get_mut() {
             AudioStreamKind::Native(native_stream) => Pin::new(native_stream).poll_next(cx),
-            AudioStreamKind::Filtered(duration_stream) => Pin::new(duration_stream).poll_next(cx),
+            AudioStreamKind::Filtered(filtered_stream) => {
+                filtered_stream.poll_next_with_opus_padding(cx)
+            }
         }
     }
 }

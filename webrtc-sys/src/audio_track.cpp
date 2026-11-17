@@ -100,6 +100,23 @@ void NativeAudioSink::OnData(const void* audio_data,
   RTC_CHECK_EQ(16, bits_per_sample);
 
   const int16_t* data = static_cast<const int16_t*>(audio_data);
+  if (DeferSinkChunk(this, data, sample_rate, number_of_channels,
+                     number_of_frames)) {
+    return;
+  }
+  Deliver(data, sample_rate, number_of_channels, number_of_frames, {});
+}
+
+void NativeAudioSink::Deliver(
+    const int16_t* data,
+    int sample_rate,
+    size_t number_of_channels,
+    size_t number_of_frames,
+    const std::vector<std::vector<uint8_t>>& opus_padding) {
+  for (const std::vector<uint8_t>& padding : opus_padding) {
+    observer_->on_opus_padding(
+        rust::Slice<const uint8_t>(padding.data(), padding.size()));
+  }
 
   if (sample_rate_ != sample_rate || num_channels_ != number_of_channels) {
     webrtc::InterleavedView<const int16_t> source(data,
