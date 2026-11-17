@@ -1337,6 +1337,14 @@ export declare class AudioFrameReceived extends Message<AudioFrameReceived> {
    */
   frame?: OwnedAudioFrameBuffer;
 
+  /**
+   * The Opus padding of each received packet whose first sample is in the
+   * frame, in order and byte for byte. Empty on E2EE tracks.
+   *
+   * @generated from field: repeated bytes opus_padding = 2;
+   */
+  opusPadding: Uint8Array[];
+
   constructor(data?: PartialMessage<AudioFrameReceived>);
 
   static readonly runtime: typeof proto2;

@@ -280,6 +280,9 @@ message AudioStreamEvent {
 
 message AudioFrameReceived {
   required OwnedAudioFrameBuffer frame = 1;
+  // The Opus padding of each received packet whose first sample is in the
+  // frame, in order and byte for byte. Empty on E2EE tracks.
+  repeated bytes opus_padding = 2;
 }
 
 message AudioStreamEOS {}

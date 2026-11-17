@@ -2247,6 +2247,7 @@ impl RoomSession {
                     track: track.clone(),
                     publication: publication.clone(),
                 };
+                attach_opus_padding_reader(&track, &publication);
                 e2ee_manager.on_track_subscribed(track, publication, participant);
                 dispatcher.dispatch(&event);
             }
@@ -2602,5 +2603,23 @@ fn unpack_stream_id(stream_id: &str) -> Option<(&str, &str)> {
         Some((participant_sid, track_sid))
     } else {
         None
+    }
+}
+
+/// Reads the Opus padding of a subscribed audio track, unless it uses E2EE:
+/// its frame cryptor needs the receiver's only frame transformer.
+fn attach_opus_padding_reader(track: &RemoteTrack, publication: &RemoteTrackPublication) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let RemoteTrack::Audio(_) = track {
+        if publication.encryption_type() != crate::e2ee::EncryptionType::None {
+            return;
+        }
+        let Some(transceiver) = track.transceiver() else {
+            return;
+        };
+        libwebrtc::audio_stream::native::attach_opus_padding_reader(
+            crate::rtc_engine::lk_runtime::LkRuntime::instance().pc_factory(),
+            &transceiver.receiver(),
+        );
     }
 }

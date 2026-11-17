@@ -28,7 +28,20 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use tokio_stream::Stream;
 use webrtc_sys::audio_track as sys_at;
 
-use crate::{audio_frame::AudioFrame, audio_track::RtcAudioTrack};
+use crate::{
+    audio_frame::AudioFrame, audio_stream::native::ReceivedAudioFrame, audio_track::RtcAudioTrack,
+    peer_connection_factory::PeerConnectionFactory, rtp_receiver::RtpReceiver,
+};
+
+/// Reads the Opus padding of the audio `receiver` receives, so streams of its
+/// track carry it. Not for E2EE receivers: their frame cryptor needs the
+/// receiver's only frame transformer.
+pub fn attach_opus_padding_reader(factory: &PeerConnectionFactory, receiver: &RtpReceiver) {
+    webrtc_sys::opus_padding_receiver::ffi::attach_opus_padding_reader(
+        factory.handle.sys_handle.clone(),
+        receiver.handle.sys_handle.clone(),
+    );
+}
 
 pub struct NativeAudioStream {
     native_sink: SharedPtr<sys_at::ffi::NativeAudioSink>,
@@ -44,7 +57,10 @@ impl NativeAudioStream {
         queue_size_frames: Option<usize>,
     ) -> Self {
         let frame_queue = Arc::new(AudioFrameQueue::new(queue_size_frames));
-        let observer = Arc::new(AudioTrackObserver { frame_queue: frame_queue.clone() });
+        let observer = Arc::new(AudioTrackObserver {
+            frame_queue: frame_queue.clone(),
+            opus_padding: Mutex::new(Vec::new()),
+        });
         let native_sink = sys_at::ffi::new_native_audio_sink(
             Box::new(sys_at::AudioSinkWrapper::new(observer.clone())),
             sample_rate,
@@ -76,7 +92,7 @@ impl Drop for NativeAudioStream {
 }
 
 impl Stream for NativeAudioStream {
-    type Item = AudioFrame<'static>;
+    type Item = ReceivedAudioFrame;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         self.frame_queue.poll_recv(cx)
@@ -85,16 +101,25 @@ impl Stream for NativeAudioStream {
 
 pub struct AudioTrackObserver {
     frame_queue: Arc<AudioFrameQueue>,
+    // Paddings for the next chunk. Locked only on the audio thread.
+    opus_padding: Mutex<Vec<Vec<u8>>>,
 }
 
 impl sys_at::AudioSink for AudioTrackObserver {
     fn on_data(&self, data: &[i16], sample_rate: i32, nb_channels: usize, nb_frames: usize) {
-        self.frame_queue.push(AudioFrame {
-            data: data.to_owned().into(),
-            sample_rate: sample_rate as u32,
-            num_channels: nb_channels as u32,
-            samples_per_channel: nb_frames as u32,
+        self.frame_queue.push(ReceivedAudioFrame {
+            frame: AudioFrame {
+                data: data.to_owned().into(),
+                sample_rate: sample_rate as u32,
+                num_channels: nb_channels as u32,
+                samples_per_channel: nb_frames as u32,
+            },
+            opus_padding: std::mem::take(&mut *self.opus_padding.lock()),
         });
+    }
+
+    fn on_opus_padding(&self, padding: &[u8]) {
+        self.opus_padding.lock().push(padding.to_vec());
     }
 }
 
@@ -111,12 +136,12 @@ enum AudioFrameQueueKind {
 }
 
 struct BoundedAudioFrameQueue {
-    producer: Mutex<Producer<AudioFrame<'static>>>,
-    consumer: Mutex<Consumer<AudioFrame<'static>>>,
+    producer: Mutex<Producer<ReceivedAudioFrame>>,
+    consumer: Mutex<Consumer<ReceivedAudioFrame>>,
 }
 
 struct UnboundedAudioFrameQueue {
-    frames: Mutex<VecDeque<AudioFrame<'static>>>,
+    frames: Mutex<VecDeque<ReceivedAudioFrame>>,
 }
 
 impl AudioFrameQueue {
@@ -142,7 +167,7 @@ impl AudioFrameQueue {
         }
     }
 
-    fn push(&self, frame: AudioFrame<'static>) {
+    fn push(&self, frame: ReceivedAudioFrame) {
         if self.closed.load(Ordering::Acquire) {
             return;
         }
@@ -157,7 +182,7 @@ impl AudioFrameQueue {
         self.wake_receiver();
     }
 
-    fn push_bounded(&self, queue: &BoundedAudioFrameQueue, mut frame: AudioFrame<'static>) {
+    fn push_bounded(&self, queue: &BoundedAudioFrameQueue, mut frame: ReceivedAudioFrame) {
         loop {
             let push_result = queue.producer.lock().push(frame);
             match push_result {
@@ -192,7 +217,7 @@ impl AudioFrameQueue {
         }
     }
 
-    fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<AudioFrame<'static>>> {
+    fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<ReceivedAudioFrame>> {
         if let Some(frame) = self.try_pop() {
             return Poll::Ready(Some(frame));
         }
@@ -213,7 +238,7 @@ impl AudioFrameQueue {
         }
     }
 
-    fn try_pop(&self) -> Option<AudioFrame<'static>> {
+    fn try_pop(&self) -> Option<ReceivedAudioFrame> {
         match &self.kind {
             AudioFrameQueueKind::Bounded(queue) => queue.consumer.lock().pop().ok(),
             AudioFrameQueueKind::Unbounded(queue) => queue.frames.lock().pop_front(),
@@ -243,19 +268,22 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use super::AudioFrameQueue;
-    use crate::audio_frame::AudioFrame;
+    use crate::{audio_frame::AudioFrame, audio_stream::native::ReceivedAudioFrame};
 
-    fn test_frame(marker: i16) -> AudioFrame<'static> {
-        AudioFrame {
-            data: vec![marker].into(),
-            sample_rate: 48_000,
-            num_channels: 1,
-            samples_per_channel: 1,
+    fn test_frame(marker: i16) -> ReceivedAudioFrame {
+        ReceivedAudioFrame {
+            frame: AudioFrame {
+                data: vec![marker].into(),
+                sample_rate: 48_000,
+                num_channels: 1,
+                samples_per_channel: 1,
+            },
+            opus_padding: Vec::new(),
         }
     }
 
     fn pop_marker(queue: &AudioFrameQueue) -> Option<i16> {
-        queue.try_pop().map(|frame| frame.data[0])
+        queue.try_pop().map(|received| received.frame.data[0])
     }
 
     #[test]

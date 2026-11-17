@@ -25,7 +25,10 @@ pub mod native {
     use tokio_stream::Stream;
 
     use super::stream_imp;
-    use crate::{audio_frame::AudioFrame, audio_track::RtcAudioTrack};
+    use crate::{
+        audio_frame::AudioFrame, audio_track::RtcAudioTrack,
+        peer_connection_factory::PeerConnectionFactory, rtp_receiver::RtpReceiver,
+    };
 
     const DEFAULT_QUEUE_SIZE_FRAMES: usize = 10;
 
@@ -99,8 +102,82 @@ pub mod native {
         type Item = AudioFrame<'static>;
 
         fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+            Pin::new(&mut self.get_mut().handle).poll_next(cx).map(|f| f.map(|f| f.frame))
+        }
+    }
+
+    /// Decoded audio and the Opus padding (RFC 6716, 3.2.5) of the received
+    /// packets whose first sample falls in it.
+    #[derive(Debug)]
+    pub struct ReceivedAudioFrame {
+        /// The decoded audio.
+        pub frame: AudioFrame<'static>,
+        /// The padding of each such packet that had padding, in order and
+        /// byte for byte.
+        pub opus_padding: Vec<Vec<u8>>,
+    }
+
+    /// Like [`NativeAudioStream`], and each frame carries the Opus padding of
+    /// the received packets whose first sample falls in it.
+    ///
+    /// Padding is read on tracks the room subscribes without E2EE; on other
+    /// tracks it is always empty.
+    pub struct NativeReceivedAudioStream {
+        handle: stream_imp::NativeAudioStream,
+    }
+
+    impl Debug for NativeReceivedAudioStream {
+        fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+            f.debug_struct("NativeReceivedAudioStream").field("track", &self.track()).finish()
+        }
+    }
+
+    impl NativeReceivedAudioStream {
+        /// Creates a stream with the default options.
+        pub fn new(audio_track: RtcAudioTrack, sample_rate: i32, num_channels: i32) -> Self {
+            NativeAudioStream::new(audio_track, sample_rate, num_channels).into()
+        }
+
+        /// Creates a stream; see [`NativeAudioStreamOptions`].
+        pub fn with_options(
+            audio_track: RtcAudioTrack,
+            sample_rate: i32,
+            num_channels: i32,
+            options: NativeAudioStreamOptions,
+        ) -> Self {
+            NativeAudioStream::with_options(audio_track, sample_rate, num_channels, options).into()
+        }
+
+        /// The track this stream reads.
+        pub fn track(&self) -> RtcAudioTrack {
+            self.handle.track()
+        }
+
+        /// Stops the stream; it then ends.
+        pub fn close(&mut self) {
+            self.handle.close()
+        }
+    }
+
+    impl From<NativeAudioStream> for NativeReceivedAudioStream {
+        fn from(stream: NativeAudioStream) -> Self {
+            Self { handle: stream.handle }
+        }
+    }
+
+    impl Stream for NativeReceivedAudioStream {
+        type Item = ReceivedAudioFrame;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
             Pin::new(&mut self.get_mut().handle).poll_next(cx)
         }
+    }
+
+    /// Reads the Opus padding of the audio `receiver` receives, for
+    /// [`NativeReceivedAudioStream`]. Not for E2EE receivers: their frame
+    /// cryptor needs the receiver's only frame transformer.
+    pub fn attach_opus_padding_reader(factory: &PeerConnectionFactory, receiver: &RtpReceiver) {
+        stream_imp::attach_opus_padding_reader(factory, receiver)
     }
 
     fn normalize_queue_size_frames(queue_size_frames: Option<usize>) -> Option<usize> {

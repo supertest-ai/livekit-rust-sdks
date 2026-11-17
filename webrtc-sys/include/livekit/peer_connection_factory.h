@@ -22,6 +22,7 @@
 #include "api/task_queue/task_queue_factory.h"
 #include "livekit/adm_proxy.h"
 #include "livekit/audio_device_controller.h"
+#include "livekit/opus_padding_receiver.h"
 #include "media_stream.h"
 #include "rtp_parameters.h"
 #include "rust/cxx.h"
@@ -82,6 +83,9 @@ class PeerConnectionFactory {
   std::shared_ptr<RtcRuntime> rtc_runtime() const { return rtc_runtime_; }
   std::shared_ptr<AudioDeviceController> audio_device() const;
   bool zero_playout_delay_enabled() const;
+  std::shared_ptr<OpusPaddingRegistry> opus_padding_registry() const {
+    return opus_padding_registry_;
+  }
 
  private:
   // Declaration order matters: rtc_runtime_ must be declared before
@@ -91,6 +95,8 @@ class PeerConnectionFactory {
   std::shared_ptr<RtcRuntime> rtc_runtime_;
   webrtc::scoped_refptr<AdmProxy> adm_proxy_;
   std::shared_ptr<AudioDeviceController> audio_device_;
+  std::shared_ptr<OpusPaddingRegistry> opus_padding_registry_ =
+      std::make_shared<OpusPaddingRegistry>();
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> peer_factory_;
   // Not owned: the media engine inside peer_factory_ owns it, so it lives as
   // long as peer_factory_ does.

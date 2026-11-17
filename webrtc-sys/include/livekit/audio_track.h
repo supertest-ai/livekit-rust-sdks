@@ -25,6 +25,7 @@
 #include "common_audio/resampler/include/push_resampler.h"
 #include "livekit/helper.h"
 #include "livekit/media_stream_track.h"
+#include "livekit/opus_padding_receiver.h"
 #include "livekit/webrtc.h"
 #include "pc/local_audio_source.h"
 #include "rtc_base/synchronization/mutex.h"
@@ -70,7 +71,8 @@ class AudioTrack : public MediaStreamTrack {
   mutable std::vector<std::shared_ptr<NativeAudioSink>> sinks_;
 };
 
-class NativeAudioSink : public webrtc::AudioTrackSinkInterface {
+class NativeAudioSink : public webrtc::AudioTrackSinkInterface,
+                        public std::enable_shared_from_this<NativeAudioSink> {
  public:
   explicit NativeAudioSink(rust::Box<AudioSinkWrapper> observer,
                            int sample_rate,
@@ -81,7 +83,21 @@ class NativeAudioSink : public webrtc::AudioTrackSinkInterface {
               size_t number_of_channels,
               size_t number_of_frames) override;
 
+  // Forwards a chunk, and before it the Opus paddings it carries.
+  void Deliver(const int16_t* data,
+               int sample_rate,
+               size_t number_of_channels,
+               size_t number_of_frames,
+               const std::vector<std::vector<uint8_t>>& opus_padding);
+
+  // Used only on the thread that plays out the track.
+  OpusPaddingStore::Cursor& opus_padding_cursor() {
+    return opus_padding_cursor_;
+  }
+
  private:
+  OpusPaddingStore::Cursor opus_padding_cursor_;
+
   rust::Box<AudioSinkWrapper> observer_;
 
   int sample_rate_;
