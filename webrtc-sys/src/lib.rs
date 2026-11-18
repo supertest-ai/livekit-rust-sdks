@@ -28,6 +28,7 @@ pub mod helper;
 pub mod jsep;
 pub mod media_stream;
 pub mod media_stream_track;
+pub mod opus_padding_receiver;
 pub mod packet_trailer;
 pub mod peer_connection;
 pub mod peer_connection_factory;

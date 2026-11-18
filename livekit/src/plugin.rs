@@ -23,7 +23,12 @@ use std::{
 
 use futures_util::Stream;
 use libloading::{Library, Symbol};
-use libwebrtc::{audio_stream::native::NativeAudioStream, prelude::AudioFrame};
+use libwebrtc::{
+    audio_stream::native::{
+        NativeAudioStream, NativeReceivedAudioStream, ReceivedAudioFrame, ReceivedAudioRechunker,
+    },
+    prelude::AudioFrame,
+};
 use parking_lot::RwLock;
 use serde::Serialize;
 use serde_json::json;
@@ -351,9 +356,9 @@ impl Drop for AudioFilterSession {
 }
 
 pub struct AudioFilterAudioStream {
-    inner: NativeAudioStream,
+    inner: NativeReceivedAudioStream,
     session: AudioFilterSession,
-    buffer: Vec<i16>,
+    rechunker: ReceivedAudioRechunker,
     output_sample_rate: u32,
     num_channels: u32,
     input_frame_size: usize,
@@ -374,9 +379,9 @@ impl AudioFilterAudioStream {
         let output_frame_size =
             ((output_sample_rate as f64) * duration.as_secs_f64() * num_channels as f64) as usize;
         Self {
-            inner,
+            inner: inner.into(),
             session,
-            buffer: Vec::with_capacity(input_frame_size),
+            rechunker: ReceivedAudioRechunker::new(input_frame_size),
             output_sample_rate,
             num_channels,
             input_frame_size,
@@ -387,42 +392,50 @@ impl AudioFilterAudioStream {
     pub fn update_stream_info(&mut self, info: AudioFilterStreamInfo) {
         self.session.update_stream_info(info);
     }
+
+    /// Like [`Stream::poll_next`], and each frame carries the Opus padding of
+    /// the received packets whose first sample falls in it (see
+    /// [`NativeReceivedAudioStream`]).
+    pub fn poll_next_with_opus_padding(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<ReceivedAudioFrame>> {
+        loop {
+            if let Some((data, opus_padding)) = self.rechunker.pop() {
+                let mut out: Vec<i16> = vec![0; self.output_frame_size];
+                self.session.process_i16(
+                    self.input_frame_size,
+                    &data,
+                    self.output_frame_size,
+                    &mut out,
+                );
+                return Poll::Ready(Some(ReceivedAudioFrame {
+                    frame: AudioFrame {
+                        data: out.into(),
+                        sample_rate: self.output_sample_rate,
+                        num_channels: self.num_channels,
+                        samples_per_channel: (self.output_frame_size / self.num_channels as usize)
+                            as u32,
+                    },
+                    opus_padding,
+                }));
+            }
+            match Pin::new(&mut self.inner).poll_next(cx) {
+                Poll::Ready(Some(received)) => {
+                    self.rechunker.push(&received.frame.data, received.opus_padding)
+                }
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
 }
 
 impl Stream for AudioFilterAudioStream {
     type Item = AudioFrame<'static>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-
-        while let Poll::Ready(frame) = Pin::new(&mut this.inner).poll_next(cx) {
-            let Some(frame) = frame else {
-                return Poll::Ready(None);
-            };
-            this.buffer.extend_from_slice(&frame.data);
-
-            if this.buffer.len() >= this.input_frame_size {
-                let data = this.buffer.drain(..this.input_frame_size).collect::<Vec<_>>();
-                let mut out: Vec<i16> = vec![0; this.output_frame_size];
-
-                this.session.process_i16(
-                    this.input_frame_size,
-                    &data,
-                    this.output_frame_size,
-                    &mut out,
-                );
-
-                return Poll::Ready(Some(AudioFrame {
-                    data: out.into(),
-                    sample_rate: this.output_sample_rate,
-                    num_channels: this.num_channels,
-                    samples_per_channel: (this.output_frame_size / this.num_channels as usize)
-                        as u32,
-                }));
-            }
-        }
-
-        Poll::Pending
+        self.get_mut().poll_next_with_opus_padding(cx).map(|f| f.map(|f| f.frame))
     }
 }
 

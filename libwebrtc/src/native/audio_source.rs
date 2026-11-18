@@ -16,11 +16,12 @@ use cxx::SharedPtr;
 use tokio::sync::oneshot;
 use webrtc_sys::audio_track as sys_at;
 
+use super::rtp_sender::RtpSender;
 use crate::{audio_frame::AudioFrame, audio_source::AudioSourceOptions, RtcError, RtcErrorType};
 
 #[derive(Clone)]
 pub struct NativeAudioSource {
-    sys_handle: SharedPtr<sys_at::ffi::AudioTrackSource>,
+    pub(crate) sys_handle: SharedPtr<sys_at::ffi::AudioTrackSource>,
     sample_rate: u32,
     num_channels: u32,
     queue_size_samples: u32,
@@ -89,7 +90,29 @@ impl NativeAudioSource {
         self.sys_handle.clear_buffer();
     }
 
+    pub fn attach_opus_padding(&self, sender: &RtpSender) {
+        self.sys_handle.attach_opus_padding(sender.sys_handle.clone());
+    }
+
     pub async fn capture_frame(&self, frame: &AudioFrame<'_>) -> Result<(), RtcError> {
+        self.capture(frame, &[]).await
+    }
+
+    pub async fn capture_frame_with_opus_padding(
+        &self,
+        frame: &AudioFrame<'_>,
+        opus_padding: &[u8],
+    ) -> Result<(), RtcError> {
+        if opus_padding.is_empty() {
+            return Err(RtcError {
+                error_type: RtcErrorType::InvalidState,
+                message: "Opus padding is empty".to_owned(),
+            });
+        }
+        self.capture(frame, opus_padding).await
+    }
+
+    async fn capture(&self, frame: &AudioFrame<'_>, opus_padding: &[u8]) -> Result<(), RtcError> {
         if self.sample_rate != frame.sample_rate || self.num_channels != frame.num_channels {
             return Err(RtcError {
                 error_type: RtcErrorType::InvalidState,
@@ -134,6 +157,7 @@ impl NativeAudioSource {
                     self.sample_rate,
                     self.num_channels,
                     nb_frames,
+                    opus_padding,
                     std::ptr::null(), // Context is still null - callback won't use it
                     noop_callback,
                 );
@@ -154,7 +178,7 @@ impl NativeAudioSource {
         }
 
         // iterate over chunks of self._queue_size_samples
-        for chunk in frame.data.chunks(self.queue_size_samples as usize) {
+        for (i, chunk) in frame.data.chunks(self.queue_size_samples as usize).enumerate() {
             let nb_frames = chunk.len() / self.num_channels as usize;
             let (tx, rx) = oneshot::channel::<()>();
             let ctx = Box::new(tx);
@@ -167,6 +191,7 @@ impl NativeAudioSource {
                     self.sample_rate,
                     self.num_channels,
                     nb_frames,
+                    if i == 0 { opus_padding } else { &[] },
                     ctx_ptr,
                     sys_at::CompleteCallback(lk_audio_source_complete),
                 ) {

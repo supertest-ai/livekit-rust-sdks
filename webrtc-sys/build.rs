@@ -56,6 +56,7 @@ fn main() {
         "src/apm.rs",
         "src/audio_mixer.rs",
         "src/packet_trailer.rs",
+        "src/opus_padding_receiver.rs",
     ];
 
     if is_desktop {
@@ -71,6 +72,7 @@ fn main() {
         "src/media_stream.cpp",
         "src/media_stream_track.cpp",
         "src/audio_track.cpp",
+        "src/opus_padding.cpp",
         "src/video_track.cpp",
         "src/data_channel.cpp",
         "src/jsep.cpp",
@@ -99,6 +101,7 @@ fn main() {
         "src/av1_bitstream.cpp",
         "src/packet_trailer.cpp",
         "src/packet_trailer_av1.cpp",
+        "src/opus_padding_receiver.cpp",
     ]);
 
     if is_desktop {

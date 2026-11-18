@@ -28,10 +28,13 @@
 #include "audio/remix_resample.h"
 #include "common_audio/include/audio_util.h"
 #include "livekit/global_task_queue.h"
+#include "livekit/opus_padding_receiver.h"
+#include "livekit/rtp_sender.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/ref_counted_object.h"
 #include "rtc_base/synchronization/mutex.h"
+#include "rtc_base/time_utils.h"
 #include "rust/cxx.h"
 #include "webrtc-sys/src/audio_track.rs.h"
 
@@ -98,6 +101,23 @@ void NativeAudioSink::OnData(const void* audio_data,
   RTC_CHECK_EQ(16, bits_per_sample);
 
   const int16_t* data = static_cast<const int16_t*>(audio_data);
+  if (DeferSinkChunk(this, data, sample_rate, number_of_channels,
+                     number_of_frames)) {
+    return;
+  }
+  Deliver(data, sample_rate, number_of_channels, number_of_frames, {});
+}
+
+void NativeAudioSink::Deliver(
+    const int16_t* data,
+    int sample_rate,
+    size_t number_of_channels,
+    size_t number_of_frames,
+    const std::vector<std::vector<uint8_t>>& opus_padding) {
+  for (const std::vector<uint8_t>& padding : opus_padding) {
+    observer_->on_opus_padding(
+        rust::Slice<const uint8_t>(padding.data(), padding.size()));
+  }
 
   if (sample_rate_ != sample_rate || num_channels_ != number_of_channels) {
     webrtc::InterleavedView<const int16_t> source(data,
@@ -162,19 +182,15 @@ AudioTrackSource::InternalSource::InternalSource(
       audio_queue_.get(),
       [this, samples10ms]() {
         webrtc::MutexLock lock(&mutex_);
-        constexpr int kBitsPerSample = sizeof(int16_t) * 8;
 
         if (buffer_.size() >= samples10ms) {
-          for (auto sink : sinks_)
-            sink->OnData(buffer_.data(), kBitsPerSample, sample_rate_,
-                         num_channels_, samples10ms / num_channels_);
-
+          SendChunk(buffer_.data(), sample_rate_, num_channels_,
+                    samples10ms / num_channels_, samples10ms / num_channels_);
           buffer_.erase(buffer_.begin(), buffer_.begin() + samples10ms);
         } else {
           // Always provide a 10ms frame to avoid playout underruns.
-          for (auto sink : sinks_)
-            sink->OnData(silence_buffer_.data(), kBitsPerSample, sample_rate_,
-                         num_channels_, samples10ms / num_channels_);
+          SendChunk(nullptr, sample_rate_, num_channels_,
+                    samples10ms / num_channels_, 0);
         }
 
         if (on_complete_ && buffer_.size() <= notify_threshold_samples_) {
@@ -189,6 +205,87 @@ AudioTrackSource::InternalSource::InternalSource(
 }
 
 AudioTrackSource::InternalSource::~InternalSource() {
+  // Waits for a running tick, which uses the members destroyed after this.
+  audio_queue_ = nullptr;
+}
+
+std::vector<webrtc::scoped_refptr<AudioTrackSource::InternalSource::PaddingTransformer>>
+AudioTrackSource::InternalSource::ActivePaddingTransformers() {
+  std::erase_if(padding_transformers_,
+                [](const auto& t) { return t->HasOneRef(); });
+  std::vector<webrtc::scoped_refptr<PaddingTransformer>> active;
+  for (const auto& t : padding_transformers_) {
+    if (t->IsActive())
+      active.push_back(t);
+  }
+  return active;
+}
+
+webrtc::scoped_refptr<OpusPaddingTransformer>
+AudioTrackSource::InternalSource::AddPaddingTransformer() {
+  webrtc::MutexLock lock(&mutex_);
+  webrtc::scoped_refptr<PaddingTransformer> transformer(new PaddingTransformer());
+  padding_transformers_.push_back(transformer);
+  return transformer;
+}
+
+// `data` is null for inserted silence.
+void AudioTrackSource::InternalSource::SendChunk(const int16_t* data,
+                                                 int sample_rate,
+                                                 size_t number_of_channels,
+                                                 size_t samples_per_channel,
+                                                 size_t queued_samples) {
+  constexpr int kBitsPerSample = sizeof(int16_t) * 8;
+  const int16_t* samples = data ? data : silence_buffer_.data();
+  const int64_t chunk_end = sent_samples_ + queued_samples;
+  const auto transformers = ActivePaddingTransformers();
+
+  if (transformers.empty()) {
+    if (!pending_padding_.empty() && !warned_padding_dropped_) {
+      RTC_LOG(LS_WARNING) << "Dropping Opus padding: no sender carries it (the "
+                             "source is unpublished, or was published "
+                             "without opus_padding)";
+      warned_padding_dropped_ = true;
+    }
+    next_capture_ms_ = -1;
+    pending_padding_.clear();
+    sent_samples_ = chunk_end;
+    for (auto sink : sinks_)
+      sink->OnData(samples, kBitsPerSample, sample_rate, number_of_channels,
+                   samples_per_channel);
+    return;
+  }
+
+  warned_padding_dropped_ = false;
+
+  // Unique per chunk, and on WebRTC's clock.
+  const int64_t capture_ms = std::max(next_capture_ms_, webrtc::TimeMillis());
+  next_capture_ms_ = capture_ms + 10;
+
+  std::vector<uint8_t> padding;
+  int superseded = 0;
+  while (!pending_padding_.empty() && pending_padding_.front().sample < chunk_end) {
+    if (padding.empty()) {
+      padding = std::move(pending_padding_.front().data);
+    } else {
+      ++superseded;
+    }
+    pending_padding_.pop_front();
+  }
+  if (superseded) {
+    RTC_LOG(LS_WARNING) << "Dropping Opus padding of " << superseded
+                        << " capture(s): an earlier one's fills their frame";
+  }
+  for (size_t i = 0; i < transformers.size(); ++i) {
+    transformers[i]->AddChunk(capture_ms, i + 1 < transformers.size()
+                                              ? padding
+                                              : std::move(padding));
+  }
+  sent_samples_ = chunk_end;
+
+  for (auto sink : sinks_)
+    sink->OnData(samples, kBitsPerSample, sample_rate, number_of_channels,
+                 samples_per_channel, capture_ms);
 }
 
 bool AudioTrackSource::InternalSource::capture_frame(
@@ -196,18 +293,25 @@ bool AudioTrackSource::InternalSource::capture_frame(
     uint32_t sample_rate,
     uint32_t number_of_channels,
     size_t number_of_frames,
+    rust::Slice<const uint8_t> opus_padding,
     const SourceContext* ctx,
     void (*on_complete)(const SourceContext*)) {
   webrtc::MutexLock lock(&mutex_);
 
+  if (!opus_padding.empty()) {
+    pending_padding_.push_back(
+        {sent_samples_ + static_cast<int64_t>(buffer_.size()) / num_channels_,
+         std::vector<uint8_t>(opus_padding.begin(), opus_padding.end())});
+  }
+
   if (queue_size_samples_) {
     int available =
         (queue_size_samples_ + notify_threshold_samples_) - buffer_.size();
-    if (available < data.size())
+    if (available < data.size() || on_complete_ || capture_userdata_) {
+      if (!opus_padding.empty())
+        pending_padding_.pop_back();
       return false;
-
-    if (on_complete_ || capture_userdata_)
-      return false;
+    }
 
     buffer_.insert(buffer_.end(), data.begin(), data.end());
 
@@ -220,9 +324,8 @@ bool AudioTrackSource::InternalSource::capture_frame(
 
   } else {
     // Fast path: capture directly when the queue buffer is 0 (frame size must be 10ms)
-    for (auto sink : sinks_)
-      sink->OnData(data.data(), sizeof(int16_t) * 8, sample_rate,
-                   number_of_channels, number_of_frames);
+    SendChunk(data.data(), sample_rate, number_of_channels, number_of_frames,
+              number_of_frames);
   }
 
   return true;
@@ -231,6 +334,7 @@ bool AudioTrackSource::InternalSource::capture_frame(
 void AudioTrackSource::InternalSource::clear_buffer() {
   webrtc::MutexLock lock(&mutex_);
   buffer_.clear();
+  pending_padding_.clear();
 }
 
 webrtc::MediaSourceInterface::SourceState
@@ -291,14 +395,21 @@ bool AudioTrackSource::capture_frame(
     uint32_t sample_rate,
     uint32_t number_of_channels,
     size_t number_of_frames,
+    rust::Slice<const uint8_t> opus_padding,
     const SourceContext* ctx,
     void (*on_complete)(const SourceContext*)) const {
   return source_->capture_frame(audio_data, sample_rate, number_of_channels,
-                                number_of_frames, ctx, on_complete);
+                                number_of_frames, opus_padding, ctx, on_complete);
 }
 
 void AudioTrackSource::clear_buffer() const {
   source_->clear_buffer();
+}
+
+void AudioTrackSource::attach_opus_padding(
+    std::shared_ptr<RtpSender> sender) const {
+  sender->rtc_sender()->SetEncoderToPacketizerFrameTransformer(
+      source_->AddPaddingTransformer());
 }
 
 std::shared_ptr<AudioTrackSource> new_audio_track_source(

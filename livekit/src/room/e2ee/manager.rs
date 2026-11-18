@@ -113,6 +113,7 @@ impl E2eeManager {
         track: RemoteTrack,
         publication: RemoteTrackPublication,
         participant: RemoteParticipant,
+        receive_opus_padding: bool,
     ) {
         let identity = participant.identity();
         let receiver = track.transceiver().unwrap().receiver();
@@ -151,6 +152,9 @@ impl E2eeManager {
         let frame_cryptor = self.setup_rtp_receiver(&identity, receiver);
         if let Some(handler) = packet_trailer_handler.as_ref() {
             frame_cryptor.set_packet_trailer_handler(handler);
+        }
+        if receive_opus_padding && matches!(track, RemoteTrack::Audio(_)) {
+            frame_cryptor.attach_opus_padding_reader(LkRuntime::instance().pc_factory());
         }
         self.setup_cryptor(&frame_cryptor);
 
@@ -194,6 +198,16 @@ impl E2eeManager {
         let frame_cryptor = self.setup_rtp_sender(&identity, sender);
         if let Some(handler) = packet_trailer_handler.as_ref() {
             frame_cryptor.set_packet_trailer_handler(handler);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let LocalTrack::Audio(audio_track) = &track {
+            if let libwebrtc::audio_source::RtcAudioSource::Native(source) =
+                audio_track.rtc_source()
+            {
+                if publication.publish_options().opus_padding {
+                    frame_cryptor.attach_opus_padding(&source);
+                }
+            }
         }
         self.setup_cryptor(&frame_cryptor);
 

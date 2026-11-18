@@ -1924,6 +1924,14 @@ export declare class TrackPublishOptions extends Message<TrackPublishOptions> {
    */
   degradationPreference?: DegradationPreference;
 
+  /**
+   * Write the Opus padding given to CaptureAudioFrameRequest into this audio
+   * track's encoded frames (default: false).
+   *
+   * @generated from field: optional bool opus_padding = 14;
+   */
+  opusPadding?: boolean;
+
   constructor(data?: PartialMessage<TrackPublishOptions>);
 
   static readonly runtime: typeof proto2;
@@ -2120,6 +2128,14 @@ export declare class RoomOptions extends Message<RoomOptions> {
    * @generated from field: optional string other_sdks = 11;
    */
   otherSdks?: string;
+
+  /**
+   * Read the Opus padding of subscribed audio tracks into
+   * AudioFrameReceived.opus_padding (default: false).
+   *
+   * @generated from field: optional bool receive_opus_padding = 12;
+   */
+  receiveOpusPadding?: boolean;
 
   constructor(data?: PartialMessage<RoomOptions>);
 

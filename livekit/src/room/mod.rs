@@ -460,6 +460,11 @@ pub struct RoomOptions {
     /// before `connect` returns. If any of them fails to publish, the room is closed and
     /// `connect` returns the error. Each track may be listed only once.
     pub publish_tracks: Vec<(LocalTrack, TrackPublishOptions)>,
+    /// Reads the Opus padding of subscribed audio tracks, delivered by
+    /// [`NativeReceivedAudioStream`].
+    ///
+    /// [`NativeReceivedAudioStream`]: libwebrtc::audio_stream::native::NativeReceivedAudioStream
+    pub receive_opus_padding: bool,
 }
 
 impl Default for RoomOptions {
@@ -479,6 +484,7 @@ impl Default for RoomOptions {
             connect_timeout: SIGNAL_CONNECT_TIMEOUT,
             data_stream: Default::default(),
             publish_tracks: Vec::new(),
+            receive_opus_padding: false,
         }
     }
 }
@@ -722,6 +728,7 @@ impl Room {
                     publication: publication.clone(),
                     track: track.clone(),
                 };
+                attach_opus_padding(&track, &publication);
                 e2ee_manager.on_local_track_published(track, publication, participant);
                 dispatcher.dispatch(&event);
             }
@@ -2421,13 +2428,22 @@ impl RoomSession {
         participant.on_track_subscribed({
             let dispatcher = self.dispatcher.clone();
             let e2ee_manager = self.e2ee_manager.clone();
+            let receive_opus_padding = self.options.receive_opus_padding;
             move |participant, publication, track| {
                 let event = RoomEvent::TrackSubscribed {
                     participant: participant.clone(),
                     track: track.clone(),
                     publication: publication.clone(),
                 };
-                e2ee_manager.on_track_subscribed(track, publication, participant);
+                if receive_opus_padding {
+                    attach_opus_padding_reader(&track, &publication);
+                }
+                e2ee_manager.on_track_subscribed(
+                    track,
+                    publication,
+                    participant,
+                    receive_opus_padding,
+                );
                 dispatcher.dispatch(&event);
             }
         });
@@ -2782,5 +2798,43 @@ fn unpack_stream_id(stream_id: &str) -> Option<(&str, &str)> {
         Some((participant_sid, track_sid))
     } else {
         None
+    }
+}
+
+/// Writes Opus padding into a published audio track's frames, if published with
+/// `opus_padding`. With E2EE, the E2EE manager writes it before encryption
+/// instead.
+fn attach_opus_padding(track: &LocalTrack, publication: &LocalTrackPublication) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let LocalTrack::Audio(audio_track) = track {
+        if !publication.publish_options().opus_padding
+            || publication.encryption_type() != crate::e2ee::EncryptionType::None
+        {
+            return;
+        }
+        let (RtcAudioSource::Native(source), Some(transceiver)) =
+            (audio_track.rtc_source(), track.transceiver())
+        else {
+            return;
+        };
+        source.attach_opus_padding(&transceiver.sender());
+    }
+}
+
+/// Reads the Opus padding of a subscribed audio track. With E2EE, the E2EE
+/// manager reads it after decryption instead.
+fn attach_opus_padding_reader(track: &RemoteTrack, publication: &RemoteTrackPublication) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let RemoteTrack::Audio(_) = track {
+        if publication.encryption_type() != crate::e2ee::EncryptionType::None {
+            return;
+        }
+        let Some(transceiver) = track.transceiver() else {
+            return;
+        };
+        libwebrtc::audio_stream::native::attach_opus_padding_reader(
+            crate::rtc_engine::lk_runtime::LkRuntime::instance().pc_factory(),
+            &transceiver.receiver(),
+        );
     }
 }

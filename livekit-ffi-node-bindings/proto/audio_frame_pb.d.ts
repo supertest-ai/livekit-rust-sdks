@@ -455,6 +455,15 @@ export declare class CaptureAudioFrameRequest extends Message<CaptureAudioFrameR
    */
   requestAsyncId?: bigint;
 
+  /**
+   * Written verbatim as the Opus padding of the encoded frame holding the
+   * buffer's first sample, if the track was published with opus_padding;
+   * dropped while no sender carries it.
+   *
+   * @generated from field: optional bytes opus_padding = 4;
+   */
+  opusPadding?: Uint8Array;
+
   constructor(data?: PartialMessage<CaptureAudioFrameRequest>);
 
   static readonly runtime: typeof proto2;
@@ -1336,6 +1345,15 @@ export declare class AudioFrameReceived extends Message<AudioFrameReceived> {
    * @generated from field: required livekit.proto.OwnedAudioFrameBuffer frame = 1;
    */
   frame?: OwnedAudioFrameBuffer;
+
+  /**
+   * The Opus padding of each received packet whose first sample is in the
+   * frame, in order and byte for byte. Empty unless the room was created
+   * with receive_opus_padding.
+   *
+   * @generated from field: repeated bytes opus_padding = 2;
+   */
+  opusPadding: Uint8Array[];
 
   constructor(data?: PartialMessage<AudioFrameReceived>);
 

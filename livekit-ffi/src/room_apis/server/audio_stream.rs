@@ -18,7 +18,9 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use livekit::track::Track;
 use livekit::webrtc::{
-    audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions},
+    audio_stream::native::{
+        NativeAudioStream, NativeAudioStreamOptions, ReceivedAudioFrame, ReceivedAudioRechunker,
+    },
     prelude::*,
 };
 use livekit::{registered_audio_filter_plugin, AudioFilterAudioStream, AudioFilterStreamInfo};
@@ -158,7 +160,7 @@ impl FfiAudioStream {
                         output_sample_rate,
                         num_channels,
                     )),
-                    None => AudioStreamKind::Native(native_stream),
+                    None => AudioStreamKind::Native(native_stream.into()),
                 };
 
                 let handle = server.async_runtime.spawn(Self::native_audio_stream_task(
@@ -359,7 +361,7 @@ impl FfiAudioStream {
                     );
                     AudioStreamKind::Filtered(stream)
                 } else {
-                    AudioStreamKind::Native(native_stream)
+                    AudioStreamKind::Native(native_stream.into())
                 };
 
                 server.async_runtime.spawn(async move {
@@ -415,9 +417,11 @@ impl FfiAudioStream {
         sample_rate: u32,
         num_channels: u32,
     ) {
-        let mut buf = Vec::new();
-        let target_samples = frame_size_ms
-            .map(|ms| sample_rate as usize * ms as usize / 1000 * num_channels as usize);
+        let mut rechunker = frame_size_ms.map(|ms| {
+            ReceivedAudioRechunker::new(
+                sample_rate as usize * ms as usize / 1000 * num_channels as usize,
+            )
+        });
 
         loop {
             tokio::select! {
@@ -447,61 +451,22 @@ impl FfiAudioStream {
                         }
                     }
 
-                    if let Some(target) = target_samples {
-                        buf.extend_from_slice(&frame.data);
-                        while buf.len() >= target {
-                            let frame_data = buf.drain(..target).collect::<Vec<_>>();
-                            let new_frame = AudioFrame {
-                                data: Cow::Owned(frame_data),
-                                sample_rate,
-                                num_channels,
-                                samples_per_channel: target as u32 / num_channels,
-                            };
-                            let handle_id = server.next_id();
-                            let buffer_info = proto::AudioFrameBufferInfo::from(&new_frame);
-                            server.store_handle(handle_id, new_frame);
-                            if let Err(err) = server.send_event(
-                                proto::AudioStreamEvent {
-                                    stream_handle: stream_handle_id,
-                                    message: Some(
-                                        proto::AudioFrameReceived {
-                                            frame: proto::OwnedAudioFrameBuffer {
-                                                handle: proto::FfiOwnedHandle { id: handle_id },
-                                                info: buffer_info,
-                                            },
-                                        }
-                                        .into()
-                                    ),
-                                }.into()
-                            ) {
-                                server.drop_handle(handle_id);
-                                log::warn!("failed to send audio frame: {}", err);
-                            }
-                        }
-                    } else {
-                        let handle_id = server.next_id();
-                        let buffer_info = proto::AudioFrameBufferInfo::from(&frame);
-                        server.store_handle(handle_id, frame);
-                        if let Err(err) = server.send_event(
-                            proto::AudioStreamEvent {
-                                stream_handle: stream_handle_id,
-                                message: Some(
-                                    proto::AudioFrameReceived {
-                                        frame: proto::OwnedAudioFrameBuffer {
-                                            handle: proto::FfiOwnedHandle { id: handle_id },
-                                            info: buffer_info,
-                                        },
-                                    }
-                                    .into()
-                                ),
-                            }
-                            .into()
-                        ) {
-                            server.drop_handle(handle_id);
-                            log::warn!("failed to send audio frame: {}", err);
-                        }
-                    }
+                    let ReceivedAudioFrame { frame, opus_padding } = frame;
+                    let Some(rechunker) = rechunker.as_mut() else {
+                        Self::send_frame(server, stream_handle_id, frame, opus_padding);
+                        continue;
+                    };
 
+                    rechunker.push(&frame.data, opus_padding);
+                    while let Some((data, opus_padding)) = rechunker.pop() {
+                        let new_frame = AudioFrame {
+                            samples_per_channel: data.len() as u32 / num_channels,
+                            data: Cow::Owned(data),
+                            sample_rate,
+                            num_channels,
+                        };
+                        Self::send_frame(server, stream_handle_id, new_frame, opus_padding);
+                    }
                 }
             }
         }
@@ -515,6 +480,38 @@ impl FfiAudioStream {
             ) {
                 log::warn!("failed to send audio eos: {}", err);
             }
+        }
+    }
+}
+
+impl FfiAudioStream {
+    fn send_frame(
+        server: &'static server::FfiServer,
+        stream_handle_id: FfiHandleId,
+        frame: AudioFrame<'static>,
+        opus_padding: Vec<Vec<u8>>,
+    ) {
+        let handle_id = server.next_id();
+        let buffer_info = proto::AudioFrameBufferInfo::from(&frame);
+        server.store_handle(handle_id, frame);
+        if let Err(err) = server.send_event(
+            proto::AudioStreamEvent {
+                stream_handle: stream_handle_id,
+                message: Some(
+                    proto::AudioFrameReceived {
+                        frame: proto::OwnedAudioFrameBuffer {
+                            handle: proto::FfiOwnedHandle { id: handle_id },
+                            info: buffer_info,
+                        },
+                        opus_padding,
+                    }
+                    .into(),
+                ),
+            }
+            .into(),
+        ) {
+            server.drop_handle(handle_id);
+            log::warn!("failed to send audio frame: {}", err);
         }
     }
 }
