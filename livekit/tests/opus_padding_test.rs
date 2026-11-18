@@ -18,12 +18,14 @@
 //! silence, one every `PERIOD` chunks. The first chunk of each burst carries
 //! padding naming that chunk. The subscriber finds each burst's onset in the
 //! decoded audio and checks that the burst's padding arrived just before it.
+//! Padding is best-effort: where no sender carries it, capturing still
+//! succeeds and the padding is dropped.
 
 #[cfg(feature = "__lk-e2e-test")]
 use {
     anyhow::{anyhow, ensure, Context, Result},
     common::{test_rooms, test_rooms_with_options},
-    futures_util::StreamExt,
+    futures_util::{FutureExt, StreamExt},
     libwebrtc::{
         audio_source::native::NativeAudioSource,
         audio_stream::native::{NativeReceivedAudioStream, ReceivedAudioFrame},
@@ -36,9 +38,9 @@ use {
         },
         options::TrackPublishOptions,
         prelude::*,
-        E2eeOptions,
+        E2eeOptions, SimulateScenario,
     },
-    std::{collections::BTreeMap, time::Duration},
+    std::{collections::BTreeMap, ops::Range, time::Duration},
     tokio::{sync::mpsc::UnboundedReceiver, task::JoinHandle, time::timeout},
 };
 
@@ -76,9 +78,10 @@ fn padding(i: u32) -> Vec<u8> {
     p
 }
 
+/// Chunk `i` of `chunks`.
 #[cfg(feature = "__lk-e2e-test")]
-fn chunk(i: u32) -> Vec<i16> {
-    if i >= CHUNKS || i % PERIOD >= TONE {
+fn chunk(i: u32, chunks: u32) -> Vec<i16> {
+    if i >= chunks || i % PERIOD >= TONE {
         return vec![0; CHUNK];
     }
     (0..CHUNK)
@@ -102,36 +105,43 @@ fn frame(data: &[i16]) -> AudioFrame<'_> {
 /// A published track sending the bursts, then silence until unpublished.
 #[cfg(feature = "__lk-e2e-test")]
 struct Publication {
-    source: NativeAudioSource,
     track: LocalAudioTrack,
     task: JoinHandle<Result<()>>,
 }
 
 #[cfg(feature = "__lk-e2e-test")]
 impl Publication {
-    /// Publishes the bursts, padding the first chunk of each if `pad`.
-    async fn new(room: &Room, options: TrackPublishOptions, pad: bool) -> Result<Self> {
+    /// Publishes `chunks` chunks of bursts, padding the first chunk of each.
+    async fn new(room: &Room, options: TrackPublishOptions, chunks: u32) -> Result<Self> {
         let source = NativeAudioSource::new(AudioSourceOptions::default(), RATE, 1, 100);
         let track =
             LocalAudioTrack::create_audio_track("padded", RtcAudioSource::Native(source.clone()));
         room.local_participant().publish_track(LocalTrack::Audio(track.clone()), options).await?;
-        let sender = source.clone();
         let task = tokio::spawn(async move {
             for i in 0.. {
-                let data = chunk(i);
+                let data = chunk(i, chunks);
                 let frame = frame(&data);
-                if pad && i < CHUNKS && i % PERIOD == 0 {
-                    sender.capture_frame_with_opus_padding(&frame, &padding(i)).await?;
+                if i < chunks && i % PERIOD == 0 {
+                    source.capture_frame_with_opus_padding(&frame, &padding(i)).await?;
                 } else {
-                    sender.capture_frame(&frame).await?;
+                    source.capture_frame(&frame).await?;
                 }
             }
             Ok(())
         });
-        Ok(Self { source, track, task })
+        Ok(Self { track, task })
     }
 
-    async fn unpublish(self, room: &Room) -> Result<()> {
+    /// Fails if capturing failed.
+    fn ensure_sending(&mut self) -> Result<()> {
+        if let Some(result) = (&mut self.task).now_or_never() {
+            result??;
+        }
+        Ok(())
+    }
+
+    async fn unpublish(mut self, room: &Room) -> Result<()> {
+        self.ensure_sending()?;
         self.task.abort();
         room.local_participant().unpublish_track(&self.track.sid()).await?;
         Ok(())
@@ -155,13 +165,13 @@ struct Chunk {
     opus_padding: Vec<Vec<u8>>,
 }
 
-/// Receives the bursts, plus slack for subscribing and the jitter buffer.
+/// Subscribes to the next track and receives `n` chunks of it.
 #[cfg(feature = "__lk-e2e-test")]
-async fn receive(events: &mut UnboundedReceiver<RoomEvent>) -> Result<Vec<Chunk>> {
+async fn receive(events: &mut UnboundedReceiver<RoomEvent>, n: u32) -> Result<Vec<Chunk>> {
     let receive = async {
         let mut stream = subscribe(events).await?;
         let mut chunks = Vec::new();
-        while chunks.len() < (CHUNKS + 200) as usize {
+        while chunks.len() < n as usize {
             let ReceivedAudioFrame { frame, opus_padding } =
                 stream.next().await.context("stream ended")?;
             ensure!(frame.samples_per_channel as usize == CHUNK, "expected 10 ms frames");
@@ -172,10 +182,30 @@ async fn receive(events: &mut UnboundedReceiver<RoomEvent>) -> Result<Vec<Chunk>
     timeout(Duration::from_secs(20), receive).await?
 }
 
-/// Checks that every padding arrived once, in order, unchanged, just before
-/// its burst's onset, and that only startup padding is missing.
+/// Where each padding arrived, by the chunk it names, checking that it was
+/// sent as one of the first `sent` chunks, and arrived once, in order and
+/// unchanged.
 #[cfg(feature = "__lk-e2e-test")]
-fn check(chunks: &[Chunk]) -> Result<()> {
+fn deliveries(chunks: &[Chunk], sent: u32) -> Result<BTreeMap<u32, usize>> {
+    let mut delivered = BTreeMap::new();
+    let mut last = None;
+    for (c, chunk) in chunks.iter().enumerate() {
+        for p in &chunk.opus_padding {
+            ensure!(p.len() == 5 && p[0] == 0xF0, "padding {p:02x?} was never sent");
+            let i = u32::from_be_bytes(p[1..].try_into()?);
+            ensure!(i < sent && i % PERIOD == 0, "padding for chunk {i} was never sent");
+            ensure!(last < Some(i), "padding for chunk {i} after chunk {last:?}");
+            last = Some(i);
+            delivered.insert(i, c * CHUNK);
+        }
+    }
+    Ok(delivered)
+}
+
+/// Checks that the padding of every burst starting in `expected` arrived just
+/// before the burst's onset.
+#[cfg(feature = "__lk-e2e-test")]
+fn check(chunks: &[Chunk], delivered: &BTreeMap<u32, usize>, expected: Range<u32>) -> Result<()> {
     // Where a burst's audio starts: a loud sample after 20 ms without one.
     let loud: Vec<usize> = (chunks.iter().flat_map(|c| &c.samples).enumerate())
         .filter(|(_, s)| s.saturating_abs() > LOUD)
@@ -186,20 +216,7 @@ fn check(chunks: &[Chunk]) -> Result<()> {
         .map(|(_, &n)| n)
         .collect();
 
-    let mut delivered = BTreeMap::new();
-    let mut last = None;
-    for (c, chunk) in chunks.iter().enumerate() {
-        for p in &chunk.opus_padding {
-            ensure!(p.len() == 5 && p[0] == 0xF0, "padding {p:02x?} was never sent");
-            let i = u32::from_be_bytes(p[1..].try_into()?);
-            ensure!(i < CHUNKS && i % PERIOD == 0, "padding for chunk {i} was never sent");
-            ensure!(last < Some(i), "padding for chunk {i} after chunk {last:?}");
-            last = Some(i);
-            delivered.insert(i, c * CHUNK);
-        }
-    }
-
-    for i in (STARTUP_CHUNKS..CHUNKS).step_by(PERIOD as usize) {
+    for i in expected.step_by(PERIOD as usize) {
         let at = *delivered.get(&i).with_context(|| format!("padding for chunk {i} missing"))?;
         let onset = onsets.iter().find(|&&o| o >= at).context("no onset after padding")?;
         ensure!(
@@ -221,8 +238,10 @@ async fn padding_arrives_with_its_audio(red: bool) -> Result<()> {
     // The second track has a new SSRC, and is received after the first
     // receiver's teardown.
     for _ in 0..2 {
-        let publication = Publication::new(&pub_room, options.clone(), true).await?;
-        check(&receive(&mut sub_events).await?)?;
+        let publication = Publication::new(&pub_room, options.clone(), CHUNKS).await?;
+        // Slack for subscribing and the jitter buffer.
+        let chunks = receive(&mut sub_events, CHUNKS + 200).await?;
+        check(&chunks, &deliveries(&chunks, CHUNKS)?, STARTUP_CHUNKS..CHUNKS)?;
         publication.unpublish(&pub_room).await?;
     }
     Ok(())
@@ -240,8 +259,46 @@ async fn test_opus_padding_red() -> Result<()> {
     padding_arrives_with_its_audio(true).await
 }
 
+/// In a full reconnect, the publisher republishes its track, and the subscriber
+/// subscribes anew, while the publisher keeps capturing padded audio. Padding
+/// resumes on the new subscription.
+#[cfg(feature = "__lk-e2e-test")]
+async fn padding_resumes_after_full_reconnect(of_publisher: bool) -> Result<()> {
+    let mut rooms = test_rooms(2).await?;
+    let (pub_room, _) = rooms.pop().unwrap();
+    let (sub_room, mut sub_events) = rooms.pop().unwrap();
+    let mut publication =
+        Publication::new(&pub_room, TrackPublishOptions::default(), u32::MAX).await?;
+    receive(&mut sub_events, 100).await?;
+
+    let room = if of_publisher { &pub_room } else { &sub_room };
+    room.simulate_scenario(SimulateScenario::FullReconnect).await?;
+    let chunks = receive(&mut sub_events, CHUNKS).await?;
+    let delivered = deliveries(&chunks, u32::MAX)?;
+    let (first, last) = match (delivered.first_key_value(), delivered.last_key_value()) {
+        (Some((&first, _)), Some((&last, _))) => (first, last),
+        _ => return Err(anyhow!("no padding after reconnecting")),
+    };
+    let expected = first + STARTUP_CHUNKS..last;
+    ensure!(expected.len() >= (CHUNKS / 2) as usize, "padding resumed only for {expected:?}");
+    check(&chunks, &delivered, expected)?;
+    publication.ensure_sending()
+}
+
+#[cfg(feature = "__lk-e2e-test")]
+#[test_log::test(tokio::test)]
+async fn test_opus_padding_publisher_full_reconnect() -> Result<()> {
+    padding_resumes_after_full_reconnect(true).await
+}
+
+#[cfg(feature = "__lk-e2e-test")]
+#[test_log::test(tokio::test)]
+async fn test_opus_padding_subscriber_full_reconnect() -> Result<()> {
+    padding_resumes_after_full_reconnect(false).await
+}
+
 /// With E2EE, the frame cryptor holds each side's only frame transformer:
-/// padding can't be sent, and the encrypted audio still plays.
+/// padding is dropped, and the encrypted audio still plays.
 #[cfg(feature = "__lk-e2e-test")]
 #[test_log::test(tokio::test)]
 async fn test_opus_padding_e2ee() -> Result<()> {
@@ -259,13 +316,8 @@ async fn test_opus_padding_e2ee() -> Result<()> {
     pub_room.e2ee_manager().set_enabled(true);
     sub_room.e2ee_manager().set_enabled(true);
 
-    let publication = Publication::new(&pub_room, TrackPublishOptions::default(), false).await?;
-    let silence = vec![0; CHUNK];
-    let padded =
-        publication.source.capture_frame_with_opus_padding(&frame(&silence), &padding(0)).await;
-    ensure!(padded.is_err(), "padding was accepted on an E2EE track");
-
-    let chunks = receive(&mut sub_events).await?;
+    let publication = Publication::new(&pub_room, TrackPublishOptions::default(), CHUNKS).await?;
+    let chunks = receive(&mut sub_events, CHUNKS + 200).await?;
     let loud = chunks.iter().flat_map(|c| &c.samples).any(|s| s.saturating_abs() > LOUD);
     ensure!(loud, "no audio received");
     ensure!(chunks.iter().all(|c| c.opus_padding.is_empty()), "padding received");

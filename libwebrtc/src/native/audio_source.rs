@@ -102,6 +102,11 @@ impl NativeAudioSource {
     /// Like [`capture_frame`], and writes `opus_padding` verbatim as the Opus
     /// padding of the encoded frame holding this frame's first sample.
     ///
+    /// Like other frame metadata, the padding is best-effort: it is dropped,
+    /// with a warning, while no sender carries it (before publishing, during a
+    /// full reconnect, or on a track using end-to-end encryption), and with
+    /// audio the subscriber conceals.
+    ///
     /// [`capture_frame`]: Self::capture_frame
     pub async fn capture_frame_with_opus_padding(
         &self,
@@ -112,14 +117,6 @@ impl NativeAudioSource {
             return Err(RtcError {
                 error_type: RtcErrorType::InvalidState,
                 message: "Opus padding is empty".to_owned(),
-            });
-        }
-        if !self.sys_handle.opus_padding_attached() {
-            return Err(RtcError {
-                error_type: RtcErrorType::InvalidState,
-                message: "Opus padding is not attached to a sender: the source is not published, \
-                          or its track uses end-to-end encryption"
-                    .to_owned(),
             });
         }
         self.capture(frame, opus_padding).await

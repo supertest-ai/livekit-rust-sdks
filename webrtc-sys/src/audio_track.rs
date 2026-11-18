@@ -64,7 +64,6 @@ pub mod ffi {
         ) -> bool;
         fn clear_buffer(self: &AudioTrackSource);
         fn attach_opus_padding(self: &AudioTrackSource, sender: SharedPtr<RtpSender>);
-        fn opus_padding_attached(self: &AudioTrackSource) -> bool;
         fn audio_options(self: &AudioTrackSource) -> AudioSourceOptions;
         fn set_audio_options(self: &AudioTrackSource, options: &AudioSourceOptions);
 

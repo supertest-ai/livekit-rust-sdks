@@ -238,11 +238,6 @@ AudioTrackSource::InternalSource::AddPaddingTransformer() {
   return transformer;
 }
 
-bool AudioTrackSource::InternalSource::HasActivePaddingTransformer() {
-  webrtc::MutexLock lock(&mutex_);
-  return !ActivePaddingTransformers().empty();
-}
-
 // `data` is null for inserted silence.
 void AudioTrackSource::InternalSource::SendChunk(const int16_t* data,
                                                  int sample_rate,
@@ -255,6 +250,14 @@ void AudioTrackSource::InternalSource::SendChunk(const int16_t* data,
   const auto transformers = ActivePaddingTransformers();
 
   if (transformers.empty()) {
+    // No sender would carry the padding: the source is unpublished, is
+    // being republished, or its track uses end-to-end encryption.
+    if (!pending_padding_.empty() && !warned_padding_dropped_) {
+      RTC_LOG(LS_WARNING) << "Dropping Opus padding: no sender carries it (the "
+                             "source is unpublished, or its track uses "
+                             "end-to-end encryption)";
+      warned_padding_dropped_ = true;
+    }
     next_capture_ms_ = -1;
     pending_padding_.clear();
     sent_samples_ = chunk_end;
@@ -263,6 +266,8 @@ void AudioTrackSource::InternalSource::SendChunk(const int16_t* data,
                    samples_per_channel);
     return;
   }
+
+  warned_padding_dropped_ = false;
 
   // Unique per chunk, and on WebRTC's clock.
   const int64_t capture_ms = std::max(next_capture_ms_, webrtc::TimeMillis());
@@ -416,10 +421,6 @@ void AudioTrackSource::attach_opus_padding(
     std::shared_ptr<RtpSender> sender) const {
   sender->rtc_sender()->SetEncoderToPacketizerFrameTransformer(
       source_->AddPaddingTransformer());
-}
-
-bool AudioTrackSource::opus_padding_attached() const {
-  return source_->HasActivePaddingTransformer();
 }
 
 std::shared_ptr<AudioTrackSource> new_audio_track_source(

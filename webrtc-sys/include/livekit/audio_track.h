@@ -148,7 +148,6 @@ class AudioTrackSource {
     void clear_buffer();
 
     webrtc::scoped_refptr<OpusPaddingTransformer> AddPaddingTransformer();
-    bool HasActivePaddingTransformer();
 
     // Indicate this is an external audio source (when external_audio_source.patch is applied).
     // This prevents AudioState from sending device audio to streams using this source.
@@ -190,6 +189,7 @@ class AudioTrackSource {
     int64_t next_capture_ms_ RTC_GUARDED_BY(mutex_) = -1;
     int64_t sent_samples_ RTC_GUARDED_BY(mutex_) = 0;
     std::deque<PendingPadding> pending_padding_ RTC_GUARDED_BY(mutex_);
+    bool warned_padding_dropped_ RTC_GUARDED_BY(mutex_) = false;
 
     int sample_rate_ = 0;
     int num_channels_ = 0;
@@ -221,8 +221,6 @@ class AudioTrackSource {
   void clear_buffer() const;
 
   void attach_opus_padding(std::shared_ptr<RtpSender> sender) const;
-
-  bool opus_padding_attached() const;
 
   webrtc::scoped_refptr<InternalSource> get() const;
 
