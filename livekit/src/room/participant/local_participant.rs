@@ -42,7 +42,6 @@ use crate::{
 use bytes::Bytes;
 use chrono::Utc;
 use libwebrtc::{
-    audio_source::RtcAudioSource,
     native::{create_random_uuid, packet_trailer},
     rtp_parameters::RtpEncodingParameters,
     video_source::RtcVideoSource,
@@ -538,17 +537,6 @@ impl LocalParticipant {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let RtcVideoSource::Native(ref native_source) = video_track.rtc_source() {
                     native_source.set_packet_trailer_handler(handler.clone());
-                }
-            }
-        }
-
-        // With E2EE, the E2EE manager pads frames before encrypting them.
-        #[cfg(not(target_arch = "wasm32"))]
-        if let LocalTrack::Audio(audio_track) = &track {
-            if options.opus_padding && self.local.encryption_type == EncryptionType::None {
-                if let RtcAudioSource::Native(native_source) = audio_track.rtc_source() {
-                    let sender = track.transceiver().unwrap().sender();
-                    native_source.attach_opus_padding(&sender);
                 }
             }
         }
