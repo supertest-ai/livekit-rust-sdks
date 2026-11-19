@@ -30,6 +30,7 @@ use {
         audio_source::native::NativeAudioSource,
         audio_stream::native::{NativeReceivedAudioStream, ReceivedAudioFrame},
         prelude::{AudioFrame, AudioSourceOptions, RtcAudioSource},
+        stats::RtcStats,
     },
     livekit::{
         e2ee::{
@@ -149,11 +150,14 @@ impl Publication {
 }
 
 #[cfg(feature = "__lk-e2e-test")]
-async fn subscribe(events: &mut UnboundedReceiver<RoomEvent>) -> Result<NativeReceivedAudioStream> {
+async fn subscribe(
+    events: &mut UnboundedReceiver<RoomEvent>,
+) -> Result<(RemoteAudioTrack, NativeReceivedAudioStream)> {
     loop {
         let event = events.recv().await.ok_or(anyhow!("never received the track"))?;
         if let RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), .. } = event {
-            return Ok(NativeReceivedAudioStream::new(track.rtc_track(), RATE as i32, 1));
+            let stream = NativeReceivedAudioStream::new(track.rtc_track(), RATE as i32, 1);
+            return Ok((track, stream));
         }
     }
 }
@@ -163,20 +167,42 @@ async fn subscribe(events: &mut UnboundedReceiver<RoomEvent>) -> Result<NativeRe
 struct Chunk {
     samples: Vec<i16>,
     opus_padding: Vec<Vec<u8>>,
+    /// How many packets the receiver had discarded for arriving too late,
+    /// sampled every `STATS_CHUNKS` chunks.
+    packets_discarded: u64,
+}
+
+#[cfg(feature = "__lk-e2e-test")]
+const STATS_CHUNKS: usize = 10;
+
+#[cfg(feature = "__lk-e2e-test")]
+/// None until the receiver has stats.
+async fn packets_discarded(track: &RemoteAudioTrack) -> Result<Option<u64>> {
+    let stats = track.get_stats().await?;
+    Ok(stats.iter().find_map(|s| match s {
+        RtcStats::InboundRtp(s) => Some(s.inbound.packets_discarded),
+        _ => None,
+    }))
 }
 
 /// Subscribes to the next track and receives `n` chunks of it.
 #[cfg(feature = "__lk-e2e-test")]
 async fn receive(events: &mut UnboundedReceiver<RoomEvent>, n: u32) -> Result<Vec<Chunk>> {
     let receive = async {
-        let mut stream = subscribe(events).await?;
+        let (track, mut stream) = subscribe(events).await?;
         let mut chunks = Vec::new();
+        let mut discarded = 0;
         while chunks.len() < n as usize {
             let ReceivedAudioFrame { frame, opus_padding } =
                 stream.next().await.context("stream ended")?;
             ensure!(frame.samples_per_channel as usize == CHUNK, "expected 10 ms frames");
-            chunks.push(Chunk { samples: frame.data.into_owned(), opus_padding });
+            if chunks.len() % STATS_CHUNKS == 0 {
+                discarded = packets_discarded(&track).await?.unwrap_or(discarded);
+            }
+            let samples = frame.data.into_owned();
+            chunks.push(Chunk { samples, opus_padding, packets_discarded: discarded });
         }
+        log::info!("received {n} chunks; the receiver discarded {discarded} late packets");
         Ok(chunks)
     };
     timeout(Duration::from_secs(20), receive).await?
@@ -203,7 +229,9 @@ fn deliveries(chunks: &[Chunk], sent: u32) -> Result<BTreeMap<u32, usize>> {
 }
 
 /// Checks that the padding of every burst starting in `expected` arrived just
-/// before the burst's onset.
+/// before the burst's onset, unless the receiver discarded a packet around it:
+/// a packet that arrives after its audio was concealed is discarded, padding
+/// and all.
 #[cfg(feature = "__lk-e2e-test")]
 fn check(chunks: &[Chunk], delivered: &BTreeMap<u32, usize>, expected: Range<u32>) -> Result<()> {
     // Where a burst's audio starts: a loud sample after 20 ms without one.
@@ -217,11 +245,20 @@ fn check(chunks: &[Chunk], delivered: &BTreeMap<u32, usize>, expected: Range<u32
         .collect();
 
     for i in expected.step_by(PERIOD as usize) {
-        let at = *delivered.get(&i).with_context(|| {
+        let Some(&at) = delivered.get(&i) else {
             let near: Vec<_> =
                 delivered.range(i.saturating_sub(4 * PERIOD)..i + 4 * PERIOD).collect();
-            format!("padding for chunk {i} missing; chunk => sample received nearby: {near:?}")
-        })?;
+            ensure!(
+                discarded_near(chunks, delivered, i),
+                "padding for chunk {i} missing, and no packet discarded; chunk => sample \
+                 received nearby: {near:?}"
+            );
+            log::info!(
+                "padding for chunk {i} discarded late; chunk => sample received nearby: \
+                 {near:?}"
+            );
+            continue;
+        };
         let onset = onsets.iter().find(|&&o| o >= at).context("no onset after padding")?;
         ensure!(
             onset - at < MAX_ONSET_DELAY,
@@ -230,6 +267,20 @@ fn check(chunks: &[Chunk], delivered: &BTreeMap<u32, usize>, expected: Range<u32
         );
     }
     Ok(())
+}
+
+/// Whether the receiver discarded a late packet within 200 ms of where the
+/// padding of chunk `i` was due.
+#[cfg(feature = "__lk-e2e-test")]
+fn discarded_near(chunks: &[Chunk], delivered: &BTreeMap<u32, usize>, i: u32) -> bool {
+    let Some((&j, &at)) = delivered.range(..i).next_back() else {
+        return false;
+    };
+    let due = at / CHUNK + (i - j) as usize;
+    let window = 2 * STATS_CHUNKS;
+    let before = &chunks[due.saturating_sub(window).min(chunks.len() - 1)];
+    let after = &chunks[(due + window).min(chunks.len() - 1)];
+    after.packets_discarded > before.packets_discarded
 }
 
 /// A publisher's room, then a subscriber's room and its events.
