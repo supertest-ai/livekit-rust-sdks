@@ -23,6 +23,7 @@
 #include "absl/strings/match.h"
 #include "api/audio/audio_frame.h"
 #include "livekit/audio_track.h"
+#include "livekit/opus_padding.h"
 #include "livekit/peer_connection_factory.h"
 #include "livekit/rtp_receiver.h"
 #include "rtc_base/logging.h"
@@ -34,59 +35,10 @@ namespace {
 // Opus always uses a 48 kHz RTP clock (RFC 7587, 4.1).
 constexpr int64_t kOpusClockRate = 48000;
 
-// Bounds the paddings kept for sinks that are slow or absent: about 10 s of
-// 20 ms packets, and nothing older than 10 s.
+// Bounds the paddings kept for streams that are slow or not played: about
+// 10 s of 20 ms packets, and nothing older than 10 s.
 constexpr size_t kMaxPaddings = 500;
 constexpr int64_t kMaxAge = 10 * kOpusClockRate;
-
-// Offset of the primary block in a RED payload (RFC 2198).
-std::optional<size_t> RedPrimaryOffset(std::span<const uint8_t> red) {
-  size_t pos = 0;
-  size_t redundant_bytes = 0;
-  while (true) {
-    if (pos >= red.size()) {
-      return std::nullopt;
-    }
-    if ((red[pos] & 0x80) == 0) {  // Last header: F = 0, payload type only.
-      pos += 1;
-      break;
-    }
-    if (pos + 4 > red.size()) {
-      return std::nullopt;
-    }
-    redundant_bytes += ((red[pos + 2] & 0x03) << 8) | red[pos + 3];
-    pos += 4;
-  }
-  const size_t primary = pos + redundant_bytes;
-  if (primary >= red.size()) {
-    return std::nullopt;
-  }
-  return primary;
-}
-
-// The padding of a code 3 Opus packet (RFC 6716, 3.2.5), or empty.
-std::span<const uint8_t> OpusPadding(std::span<const uint8_t> packet) {
-  if (packet.size() < 2 || (packet[0] & 3) != 3 || (packet[1] & 0x40) == 0) {
-    return {};
-  }
-  size_t pos = 2;
-  size_t padding = 0;
-  while (true) {
-    if (pos >= packet.size()) {
-      return {};
-    }
-    const uint8_t n = packet[pos++];
-    if (n != 255) {
-      padding += n;
-      break;
-    }
-    padding += 254;  // 254 bytes of padding, and another length byte.
-  }
-  if (padding > packet.size() - pos) {
-    return {};
-  }
-  return packet.subspan(packet.size() - padding);
-}
 
 std::span<const uint8_t> FramePadding(
     const webrtc::TransformableFrameInterface& frame) {
@@ -111,80 +63,60 @@ struct DeferredChunk {
   size_t number_of_frames;
 };
 
-// The chunks track sinks received during the current source call, if it has
-// a store.
+// The chunks track sinks received during the current source call, if its
+// stream has padding.
 thread_local std::vector<DeferredChunk>* deferred_chunks = nullptr;
 
 }  // namespace
 
-void OpusPaddingStore::Add(uint32_t rtp_timestamp,
-                           std::vector<uint8_t> padding) {
+void OpusPaddingRegistry::Add(uint32_t ssrc,
+                              uint32_t rtp_timestamp,
+                              std::vector<uint8_t> padding) {
   webrtc::MutexLock lock(&mutex_);
-  const int64_t timestamp = unwrapper_.Unwrap(rtp_timestamp);
-  paddings_.emplace(timestamp, std::move(padding));
-  const int64_t newest = paddings_.rbegin()->first;
-  while (paddings_.size() > kMaxPaddings ||
-         paddings_.begin()->first < newest - kMaxAge) {
-    paddings_.erase(paddings_.begin());
+  Stream& stream = streams_[ssrc];
+  stream.paddings.emplace(stream.unwrapper.Unwrap(rtp_timestamp),
+                          std::move(padding));
+  const int64_t newest = stream.paddings.rbegin()->first;
+  while (stream.paddings.size() > kMaxPaddings ||
+         stream.paddings.begin()->first < newest - kMaxAge) {
+    stream.paddings.erase(stream.paddings.begin());
   }
 }
 
-void OpusPaddingStore::Take(Cursor* cursor,
-                            uint32_t rtp_timestamp,
-                            uint32_t duration,
-                            std::vector<std::vector<uint8_t>>* out) {
+void OpusPaddingRegistry::Remove(uint32_t ssrc) {
   webrtc::MutexLock lock(&mutex_);
-  const int64_t start = unwrapper_.Unwrap(rtp_timestamp);
+  streams_.erase(ssrc);
+}
+
+bool OpusPaddingRegistry::Has(uint32_t ssrc) {
+  webrtc::MutexLock lock(&mutex_);
+  return streams_.contains(ssrc);
+}
+
+std::vector<std::vector<uint8_t>> OpusPaddingRegistry::Take(
+    uint32_t ssrc,
+    uint32_t rtp_timestamp,
+    uint32_t duration,
+    bool from_packet) {
+  webrtc::MutexLock lock(&mutex_);
+  std::vector<std::vector<uint8_t>> out;
+  auto stream = streams_.find(ssrc);
+  if (stream == streams_.end() || (!stream->second.next && !from_packet)) {
+    return out;
+  }
+  Stream& s = stream->second;
+  const int64_t start = s.unwrapper.Unwrap(rtp_timestamp);
   const int64_t end = start + duration;
-  // A new sink starts at its first chunk, not at earlier packets.
-  const int64_t next = cursor->next.value_or(start);
-  for (auto it = paddings_.lower_bound(next);
-       it != paddings_.end() && it->first < end; ++it) {
-    out->push_back(it->second);
+  // Delivery starts at the first chunk played, not at earlier packets.
+  const int64_t next = s.next.value_or(start);
+  for (auto it = s.paddings.lower_bound(next);
+       it != s.paddings.end() && it->first < end;) {
+    out.push_back(std::move(it->second));
+    it = s.paddings.erase(it);
   }
   // NetEq can repeat or skip timestamps; never deliver a padding twice.
-  cursor->next = std::max(next, end);
-}
-
-void OpusPaddingRegistry::Register(
-    uint32_t ssrc,
-    const std::shared_ptr<OpusPaddingStore>& store) {
-  webrtc::MutexLock lock(&mutex_);
-  auto& stores = stores_[ssrc];
-  std::erase_if(stores, [&](const std::weak_ptr<OpusPaddingStore>& s) {
-    auto live = s.lock();
-    return !live || live == store;
-  });
-  stores.push_back(store);
-  if (stores.size() > 1) {
-    RTC_LOG(LS_WARNING) << "Not delivering Opus padding: " << stores.size()
-                        << " receive streams have SSRC " << ssrc;
-  }
-}
-
-void OpusPaddingRegistry::Unregister(uint32_t ssrc,
-                                     const OpusPaddingStore* store) {
-  webrtc::MutexLock lock(&mutex_);
-  auto it = stores_.find(ssrc);
-  if (it == stores_.end()) {
-    return;
-  }
-  std::erase_if(it->second, [&](const std::weak_ptr<OpusPaddingStore>& s) {
-    auto live = s.lock();
-    return !live || live.get() == store;
-  });
-  if (it->second.empty()) {
-    stores_.erase(it);
-  }
-}
-
-std::shared_ptr<OpusPaddingStore> OpusPaddingRegistry::Find(uint32_t ssrc) {
-  webrtc::MutexLock lock(&mutex_);
-  auto it = stores_.find(ssrc);
-  if (it == stores_.end() || it->second.size() != 1) {
-    return nullptr;
-  }
-  return it->second.front().lock();
+  s.next = std::max(next, end);
+  return out;
 }
 
 OpusPaddingReader::OpusPaddingReader(
@@ -193,25 +125,23 @@ OpusPaddingReader::OpusPaddingReader(
 
 OpusPaddingReader::~OpusPaddingReader() {
   webrtc::MutexLock lock(&mutex_);
-  UnregisterStore();
+  RemoveStream();
 }
 
 void OpusPaddingReader::Transform(
     std::unique_ptr<webrtc::TransformableFrameInterface> frame) {
   const uint32_t ssrc = frame->GetSsrc();
-  const std::span<const uint8_t> padding = FramePadding(*frame);
-  if (!padding.empty()) {
-    store_->Add(frame->GetTimestamp(),
-                std::vector<uint8_t>(padding.begin(), padding.end()));
-  }
-
   webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback;
   {
     webrtc::MutexLock lock(&mutex_);
     if (ssrc_ != ssrc) {
-      UnregisterStore();
-      registry_->Register(ssrc, store_);
+      RemoveStream();
       ssrc_ = ssrc;
+    }
+    const std::span<const uint8_t> padding = FramePadding(*frame);
+    if (!padding.empty()) {
+      registry_->Add(ssrc, frame->GetTimestamp(),
+                     std::vector<uint8_t>(padding.begin(), padding.end()));
     }
     auto it = sink_callbacks_.find(ssrc);
     callback = it != sink_callbacks_.end() ? it->second : callback_;
@@ -237,20 +167,20 @@ void OpusPaddingReader::RegisterTransformedFrameSinkCallback(
 void OpusPaddingReader::UnregisterTransformedFrameCallback() {
   webrtc::MutexLock lock(&mutex_);
   callback_ = nullptr;
-  UnregisterStore();
+  RemoveStream();
 }
 
 void OpusPaddingReader::UnregisterTransformedFrameSinkCallback(uint32_t ssrc) {
   webrtc::MutexLock lock(&mutex_);
   sink_callbacks_.erase(ssrc);
   if (ssrc_ == ssrc) {
-    UnregisterStore();
+    RemoveStream();
   }
 }
 
-void OpusPaddingReader::UnregisterStore() {
+void OpusPaddingReader::RemoveStream() {
   if (ssrc_) {
-    registry_->Unregister(*ssrc_, store_.get());
+    registry_->Remove(*ssrc_);
     ssrc_.reset();
   }
 }
@@ -262,9 +192,8 @@ class OpusPaddingAudioMixer::SourceWrapper : public webrtc::AudioMixer::Source {
 
   AudioFrameInfo GetAudioFrameWithInfo(int sample_rate_hz,
                                        webrtc::AudioFrame* frame) override {
-    const std::shared_ptr<OpusPaddingStore> store =
-        registry_->Find(static_cast<uint32_t>(inner_->Ssrc()));
-    if (!store) {
+    const auto ssrc = static_cast<uint32_t>(inner_->Ssrc());
+    if (!registry_->Has(ssrc)) {
       return inner_->GetAudioFrameWithInfo(sample_rate_hz, frame);
     }
 
@@ -276,28 +205,24 @@ class OpusPaddingAudioMixer::SourceWrapper : public webrtc::AudioMixer::Source {
     const AudioFrameInfo info =
         inner_->GetAudioFrameWithInfo(sample_rate_hz, frame);
     deferred_chunks = outer;
+    if (chunks.empty()) {
+      return info;
+    }
 
     // Before NetEq has decoded a packet, `timestamp_` is not an RTP
     // timestamp, and no packet contributed to the chunk.
-    const bool from_packet = !frame->packet_infos_.empty();
-    std::vector<std::vector<uint8_t>> padding;
+    const DeferredChunk& first = chunks.front();
+    const std::vector<std::vector<uint8_t>> padding = registry_->Take(
+        ssrc, frame->timestamp_,
+        static_cast<uint32_t>(first.number_of_frames * kOpusClockRate /
+                              first.sample_rate),
+        !frame->packet_infos_.empty());
     for (const DeferredChunk& chunk : chunks) {
-      const std::shared_ptr<NativeAudioSink> sink = chunk.sink.lock();
-      if (!sink) {
-        continue;
+      if (const std::shared_ptr<NativeAudioSink> sink = chunk.sink.lock()) {
+        sink->Deliver(chunk.data.data(), chunk.sample_rate,
+                      chunk.number_of_channels, chunk.number_of_frames,
+                      padding);
       }
-      padding.clear();
-      OpusPaddingStore::Cursor& cursor = sink->opus_padding_cursor();
-      if (cursor.store.lock() != store) {
-        cursor = {store, std::nullopt};
-      }
-      if (cursor.next || from_packet) {
-        const auto duration = static_cast<uint32_t>(
-            chunk.number_of_frames * kOpusClockRate / chunk.sample_rate);
-        store->Take(&cursor, frame->timestamp_, duration, &padding);
-      }
-      sink->Deliver(chunk.data.data(), chunk.sample_rate,
-                    chunk.number_of_channels, chunk.number_of_frames, padding);
     }
     return info;
   }

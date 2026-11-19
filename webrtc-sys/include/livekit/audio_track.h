@@ -27,7 +27,6 @@
 #include "livekit/opus_padding.h"
 #include "livekit/helper.h"
 #include "livekit/media_stream_track.h"
-#include "livekit/opus_padding_receiver.h"
 #include "livekit/webrtc.h"
 #include "pc/local_audio_source.h"
 #include "rtc_base/ref_counted_object.h"
@@ -94,14 +93,7 @@ class NativeAudioSink : public webrtc::AudioTrackSinkInterface,
                size_t number_of_frames,
                const std::vector<std::vector<uint8_t>>& opus_padding);
 
-  // Used only on the thread that plays out the track.
-  OpusPaddingStore::Cursor& opus_padding_cursor() {
-    return opus_padding_cursor_;
-  }
-
  private:
-  OpusPaddingStore::Cursor opus_padding_cursor_;
-
   rust::Box<AudioSinkWrapper> observer_;
 
   int sample_rate_;

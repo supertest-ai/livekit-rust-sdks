@@ -24,7 +24,9 @@ use std::{
 use futures_util::Stream;
 use libloading::{Library, Symbol};
 use libwebrtc::{
-    audio_stream::native::{NativeAudioStream, NativeReceivedAudioStream, ReceivedAudioFrame},
+    audio_stream::native::{
+        NativeAudioStream, NativeReceivedAudioStream, ReceivedAudioFrame, ReceivedAudioRechunker,
+    },
     prelude::AudioFrame,
 };
 use parking_lot::RwLock;
@@ -356,9 +358,7 @@ impl Drop for AudioFilterSession {
 pub struct AudioFilterAudioStream {
     inner: NativeReceivedAudioStream,
     session: AudioFilterSession,
-    buffer: Vec<i16>,
-    // Opus paddings, each at the buffer index where its chunk starts.
-    opus_padding: Vec<(usize, Vec<u8>)>,
+    rechunker: ReceivedAudioRechunker,
     output_sample_rate: u32,
     num_channels: u32,
     input_frame_size: usize,
@@ -381,8 +381,7 @@ impl AudioFilterAudioStream {
         Self {
             inner: inner.into(),
             session,
-            buffer: Vec::with_capacity(input_frame_size),
-            opus_padding: Vec::new(),
+            rechunker: ReceivedAudioRechunker::new(input_frame_size),
             output_sample_rate,
             num_channels,
             input_frame_size,
@@ -401,33 +400,15 @@ impl AudioFilterAudioStream {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<ReceivedAudioFrame>> {
-        while let Poll::Ready(received) = Pin::new(&mut self.inner).poll_next(cx) {
-            let Some(received) = received else {
-                return Poll::Ready(None);
-            };
-            let start = self.buffer.len();
-            self.opus_padding.extend(received.opus_padding.into_iter().map(|p| (start, p)));
-            self.buffer.extend_from_slice(&received.frame.data);
-
-            if self.buffer.len() >= self.input_frame_size {
-                let data = self.buffer.drain(..self.input_frame_size).collect::<Vec<_>>();
+        loop {
+            if let Some((data, opus_padding)) = self.rechunker.pop() {
                 let mut out: Vec<i16> = vec![0; self.output_frame_size];
-
                 self.session.process_i16(
                     self.input_frame_size,
                     &data,
                     self.output_frame_size,
                     &mut out,
                 );
-
-                let n = self.input_frame_size;
-                let later = self.opus_padding.iter().position(|(i, _)| *i >= n);
-                let rest = self.opus_padding.split_off(later.unwrap_or(self.opus_padding.len()));
-                let opus_padding = std::mem::replace(
-                    &mut self.opus_padding,
-                    rest.into_iter().map(|(i, p)| (i - n, p)).collect(),
-                );
-
                 return Poll::Ready(Some(ReceivedAudioFrame {
                     frame: AudioFrame {
                         data: out.into(),
@@ -436,12 +417,17 @@ impl AudioFilterAudioStream {
                         samples_per_channel: (self.output_frame_size / self.num_channels as usize)
                             as u32,
                     },
-                    opus_padding: opus_padding.into_iter().map(|(_, p)| p).collect(),
+                    opus_padding,
                 }));
             }
+            match Pin::new(&mut self.inner).poll_next(cx) {
+                Poll::Ready(Some(received)) => {
+                    self.rechunker.push(&received.frame.data, received.opus_padding)
+                }
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
         }
-
-        Poll::Pending
     }
 }
 

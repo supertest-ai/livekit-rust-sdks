@@ -18,7 +18,9 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use livekit::track::Track;
 use livekit::webrtc::{
-    audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions, ReceivedAudioFrame},
+    audio_stream::native::{
+        NativeAudioStream, NativeAudioStreamOptions, ReceivedAudioFrame, ReceivedAudioRechunker,
+    },
     prelude::*,
 };
 use livekit::{registered_audio_filter_plugin, AudioFilterAudioStream, AudioFilterStreamInfo};
@@ -416,7 +418,9 @@ impl FfiAudioStream {
         num_channels: u32,
     ) {
         let mut rechunker = frame_size_ms.map(|ms| {
-            Rechunker::new(sample_rate as usize * ms as usize / 1000 * num_channels as usize)
+            ReceivedAudioRechunker::new(
+                sample_rate as usize * ms as usize / 1000 * num_channels as usize,
+            )
         });
 
         loop {
@@ -453,7 +457,8 @@ impl FfiAudioStream {
                         continue;
                     };
 
-                    for (data, opus_padding) in rechunker.push(&frame.data, opus_padding) {
+                    rechunker.push(&frame.data, opus_padding);
+                    while let Some((data, opus_padding)) = rechunker.pop() {
                         let new_frame = AudioFrame {
                             samples_per_channel: data.len() as u32 / num_channels,
                             data: Cow::Owned(data),
@@ -508,62 +513,6 @@ impl FfiAudioStream {
             server.drop_handle(handle_id);
             log::warn!("failed to send audio frame: {}", err);
         }
-    }
-}
-
-/// Re-chunks audio to a fixed size. Each Opus padding goes with the chunk
-/// that holds the first sample of the input frame it came with.
-struct Rechunker {
-    size: usize,
-    buf: Vec<i16>,
-    // Paddings, each at the `buf` index where its input frame starts.
-    opus_padding: Vec<(usize, Vec<u8>)>,
-}
-
-impl Rechunker {
-    fn new(size: usize) -> Self {
-        Self { size, buf: Vec::new(), opus_padding: Vec::new() }
-    }
-
-    fn push(&mut self, data: &[i16], opus_padding: Vec<Vec<u8>>) -> Vec<(Vec<i16>, Vec<Vec<u8>>)> {
-        let start = self.buf.len();
-        self.opus_padding.extend(opus_padding.into_iter().map(|p| (start, p)));
-        self.buf.extend_from_slice(data);
-        let mut out = Vec::new();
-        while self.buf.len() >= self.size {
-            let chunk = self.buf.drain(..self.size).collect();
-            let later = self.opus_padding.partition_point(|(i, _)| *i < self.size);
-            let rest = self.opus_padding.split_off(later);
-            let taken = std::mem::replace(
-                &mut self.opus_padding,
-                rest.into_iter().map(|(i, p)| (i - self.size, p)).collect(),
-            );
-            out.push((chunk, taken.into_iter().map(|(_, p)| p).collect()));
-        }
-        out
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Rechunker;
-
-    #[test]
-    fn rechunker_keeps_padding_with_its_first_sample() {
-        let mut r = Rechunker::new(4);
-        assert!(r.push(&[0, 1], vec![b"a".to_vec()]).is_empty());
-        // "b" starts at index 2 of the first chunk; "c" at index 0 of the second.
-        let out = r.push(&[2, 3, 4, 5], vec![b"b".to_vec(), b"c".to_vec()]);
-        assert_eq!(
-            out,
-            vec![(vec![0, 1, 2, 3], vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()])]
-        );
-        let out = r.push(&[6, 7, 8, 9, 10, 11], vec![b"d".to_vec()]);
-        // "d" starts at index 2 of the second chunk.
-        assert_eq!(
-            out,
-            vec![(vec![4, 5, 6, 7], vec![b"d".to_vec()]), (vec![8, 9, 10, 11], vec![])]
-        );
     }
 }
 

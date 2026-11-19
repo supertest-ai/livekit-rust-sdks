@@ -73,30 +73,6 @@ std::optional<int64_t> OpusPacketDurationMs(std::span<const uint8_t> packet) {
   return (samples + 47) / 48;
 }
 
-// Offset of the primary block in a RED payload (RFC 2198).
-std::optional<size_t> RedPrimaryOffset(std::span<const uint8_t> red) {
-  size_t pos = 0;
-  size_t redundant_bytes = 0;
-  while (true) {
-    if (pos >= red.size()) {
-      return std::nullopt;
-    }
-    if ((red[pos] & 0x80) == 0) {  // Last header: F = 0, payload type only.
-      pos += 1;
-      break;
-    }
-    if (pos + 4 > red.size()) {
-      return std::nullopt;
-    }
-    redundant_bytes += ((red[pos + 2] & 0x03) << 8) | red[pos + 3];
-    pos += 4;
-  }
-  const size_t primary = pos + redundant_bytes;
-  if (primary >= red.size()) {
-    return std::nullopt;
-  }
-  return primary;
-}
 
 // Rewrites `packet` to code 3 with `padding`. False if it already has padding.
 bool AppendPaddedOpusPacket(std::span<const uint8_t> packet,
@@ -132,6 +108,53 @@ bool AppendPaddedOpusPacket(std::span<const uint8_t> packet,
 }
 
 }  // namespace
+
+std::optional<size_t> RedPrimaryOffset(std::span<const uint8_t> red) {
+  size_t pos = 0;
+  size_t redundant_bytes = 0;
+  while (true) {
+    if (pos >= red.size()) {
+      return std::nullopt;
+    }
+    if ((red[pos] & 0x80) == 0) {  // Last header: F = 0, payload type only.
+      pos += 1;
+      break;
+    }
+    if (pos + 4 > red.size()) {
+      return std::nullopt;
+    }
+    redundant_bytes += ((red[pos + 2] & 0x03) << 8) | red[pos + 3];
+    pos += 4;
+  }
+  const size_t primary = pos + redundant_bytes;
+  if (primary >= red.size()) {
+    return std::nullopt;
+  }
+  return primary;
+}
+
+std::span<const uint8_t> OpusPadding(std::span<const uint8_t> packet) {
+  if (packet.size() < 2 || (packet[0] & 3) != 3 || (packet[1] & 0x40) == 0) {
+    return {};
+  }
+  size_t pos = 2;
+  size_t padding = 0;
+  while (true) {
+    if (pos >= packet.size()) {
+      return {};
+    }
+    const uint8_t n = packet[pos++];
+    if (n != 255) {
+      padding += n;
+      break;
+    }
+    padding += 254;  // 254 bytes of padding, and another length byte.
+  }
+  if (padding > packet.size() - pos) {
+    return {};
+  }
+  return packet.subspan(packet.size() - padding);
+}
 
 bool OpusPaddingTransformer::IsActive() {
   webrtc::MutexLock lock(&mutex_);

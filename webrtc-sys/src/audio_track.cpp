@@ -28,6 +28,7 @@
 #include "audio/remix_resample.h"
 #include "common_audio/include/audio_util.h"
 #include "livekit/global_task_queue.h"
+#include "livekit/opus_padding_receiver.h"
 #include "livekit/rtp_sender.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"

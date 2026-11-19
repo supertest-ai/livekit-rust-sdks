@@ -33,9 +33,9 @@
 // Receive side of Opus padding (RFC 6716, 3.2.5).
 //
 // A reader on each audio receiver records the padding of every received Opus
-// packet by RTP timestamp. A mixer decorator learns the RTP timestamp of each
-// 10 ms chunk a receive stream plays out, and hands the chunk's track sinks
-// the paddings of the packets that start before the chunk ends.
+// packet by SSRC and RTP timestamp. A mixer decorator learns the RTP timestamp
+// of each 10 ms chunk a receive stream plays out, and hands the chunk's track
+// sinks the paddings of the packets that start before the chunk ends.
 
 namespace livekit_ffi {
 
@@ -43,47 +43,34 @@ class NativeAudioSink;
 class PeerConnectionFactory;
 class RtpReceiver;
 
-// The paddings one receiver has read, keyed by RTP timestamp.
-class OpusPaddingStore {
+// The paddings read on each receive stream, by SSRC. One per factory.
+class OpusPaddingRegistry {
  public:
-  // A sink's position in the store.
-  struct Cursor {
-    std::weak_ptr<OpusPaddingStore> store;
-    // First RTP timestamp not yet delivered, unwrapped.
+  void Add(uint32_t ssrc, uint32_t rtp_timestamp, std::vector<uint8_t> padding);
+  void Remove(uint32_t ssrc);
+  bool Has(uint32_t ssrc);
+
+  // The paddings of packets that start before the chunk
+  // [rtp_timestamp, rtp_timestamp + duration) ends and were not yet taken.
+  // `from_packet` is false while `rtp_timestamp` is not yet an RTP timestamp.
+  std::vector<std::vector<uint8_t>> Take(uint32_t ssrc,
+                                         uint32_t rtp_timestamp,
+                                         uint32_t duration,
+                                         bool from_packet);
+
+ private:
+  struct Stream {
+    webrtc::RtpTimestampUnwrapper unwrapper;
+    std::map<int64_t, std::vector<uint8_t>> paddings;
+    // First RTP timestamp not yet taken, unwrapped.
     std::optional<int64_t> next;
   };
 
-  void Add(uint32_t rtp_timestamp, std::vector<uint8_t> padding);
-
-  // Appends to `out` the paddings of packets that start before the chunk
-  // [rtp_timestamp, rtp_timestamp + duration) ends and were not yet taken
-  // through `cursor`.
-  void Take(Cursor* cursor,
-            uint32_t rtp_timestamp,
-            uint32_t duration,
-            std::vector<std::vector<uint8_t>>* out);
-
- private:
   webrtc::Mutex mutex_;
-  webrtc::RtpTimestampUnwrapper unwrapper_ RTC_GUARDED_BY(mutex_);
-  std::map<int64_t, std::vector<uint8_t>> paddings_ RTC_GUARDED_BY(mutex_);
+  std::map<uint32_t, Stream> streams_ RTC_GUARDED_BY(mutex_);
 };
 
-// Finds the store of the receive stream with a given SSRC. One per factory.
-class OpusPaddingRegistry {
- public:
-  void Register(uint32_t ssrc, const std::shared_ptr<OpusPaddingStore>& store);
-  void Unregister(uint32_t ssrc, const OpusPaddingStore* store);
-  // Null unless exactly one live store has `ssrc`.
-  std::shared_ptr<OpusPaddingStore> Find(uint32_t ssrc);
-
- private:
-  webrtc::Mutex mutex_;
-  std::map<uint32_t, std::vector<std::weak_ptr<OpusPaddingStore>>> stores_
-      RTC_GUARDED_BY(mutex_);
-};
-
-// Reads the padding of each received frame into a store, and passes the
+// Reads the padding of each received frame into the registry, and passes the
 // frame on unchanged.
 class OpusPaddingReader : public webrtc::FrameTransformerInterface {
  public:
@@ -101,11 +88,9 @@ class OpusPaddingReader : public webrtc::FrameTransformerInterface {
   void UnregisterTransformedFrameSinkCallback(uint32_t ssrc) override;
 
  private:
-  void UnregisterStore() RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+  void RemoveStream() RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   const std::shared_ptr<OpusPaddingRegistry> registry_;
-  const std::shared_ptr<OpusPaddingStore> store_ =
-      std::make_shared<OpusPaddingStore>();
   webrtc::Mutex mutex_;
   webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback_
       RTC_GUARDED_BY(mutex_);
@@ -114,8 +99,8 @@ class OpusPaddingReader : public webrtc::FrameTransformerInterface {
   std::optional<uint32_t> ssrc_ RTC_GUARDED_BY(mutex_);
 };
 
-// Wraps the factory's audio mixer. Each source call that has a store defers
-// its track sinks' chunks until the call returns and the chunk's RTP
+// Wraps the factory's audio mixer. Each source call of a stream with padding
+// defers its track sinks' chunks until the call returns and the chunk's RTP
 // timestamp is known.
 class OpusPaddingAudioMixer : public webrtc::AudioMixer {
  public:
