@@ -217,7 +217,11 @@ fn check(chunks: &[Chunk], delivered: &BTreeMap<u32, usize>, expected: Range<u32
         .collect();
 
     for i in expected.step_by(PERIOD as usize) {
-        let at = *delivered.get(&i).with_context(|| format!("padding for chunk {i} missing"))?;
+        let at = *delivered.get(&i).with_context(|| {
+            let near: Vec<_> =
+                delivered.range(i.saturating_sub(4 * PERIOD)..i + 4 * PERIOD).collect();
+            format!("padding for chunk {i} missing; chunk => sample received nearby: {near:?}")
+        })?;
         let onset = onsets.iter().find(|&&o| o >= at).context("no onset after padding")?;
         ensure!(
             onset - at < MAX_ONSET_DELAY,
