@@ -220,16 +220,14 @@ impl FrameCryptor {
         self.sys_handle.set_packet_trailer_handler(handler.sys_handle());
     }
 
-    /// Writes `source`'s Opus padding into a sender's frames before they are
-    /// encrypted. See [`NativeAudioSource::attach_opus_padding`].
+    /// Writes `source`'s Opus padding into the sender's frames before they are
+    /// encrypted.
     pub fn attach_opus_padding(&self, source: &NativeAudioSource) {
         self.sys_handle.attach_opus_padding(source.handle.sys_handle.clone());
     }
 
-    /// Reads the Opus padding of a receiver's frames after they are decrypted.
-    /// See [`attach_opus_padding_reader`].
-    ///
-    /// [`attach_opus_padding_reader`]: crate::audio_stream::native::attach_opus_padding_reader
+    /// Reads the Opus padding of the receiver's frames after they are
+    /// decrypted.
     pub fn attach_opus_padding_reader(&self, peer_factory: &PeerConnectionFactory) {
         self.sys_handle.attach_opus_padding_reader(peer_factory.handle.sys_handle.clone());
     }

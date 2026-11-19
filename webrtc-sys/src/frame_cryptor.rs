@@ -153,12 +153,8 @@ pub mod ffi {
             handler: SharedPtr<PacketTrailerHandler>,
         );
 
-        /// Writes `source`'s Opus padding into a sender's frames before they
-        /// are encrypted.
         pub fn attach_opus_padding(self: &FrameCryptor, source: SharedPtr<AudioTrackSource>);
 
-        /// Reads the Opus padding of a receiver's frames after they are
-        /// decrypted.
         pub fn attach_opus_padding_reader(
             self: &FrameCryptor,
             factory: SharedPtr<PeerConnectionFactory>,

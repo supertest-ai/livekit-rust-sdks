@@ -110,7 +110,6 @@ pub mod native {
     /// packets whose first sample falls in it.
     #[derive(Debug)]
     pub struct ReceivedAudioFrame {
-        /// The decoded audio.
         pub frame: AudioFrame<'static>,
         /// The padding of each such packet that had padding, in order and
         /// byte for byte.
@@ -133,12 +132,10 @@ pub mod native {
     }
 
     impl NativeReceivedAudioStream {
-        /// Creates a stream with the default options.
         pub fn new(audio_track: RtcAudioTrack, sample_rate: i32, num_channels: i32) -> Self {
             NativeAudioStream::new(audio_track, sample_rate, num_channels).into()
         }
 
-        /// Creates a stream; see [`NativeAudioStreamOptions`].
         pub fn with_options(
             audio_track: RtcAudioTrack,
             sample_rate: i32,
@@ -148,12 +145,10 @@ pub mod native {
             NativeAudioStream::with_options(audio_track, sample_rate, num_channels, options).into()
         }
 
-        /// The track this stream reads.
         pub fn track(&self) -> RtcAudioTrack {
             self.handle.track()
         }
 
-        /// Stops the stream; it then ends.
         pub fn close(&mut self) {
             self.handle.close()
         }

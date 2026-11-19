@@ -166,8 +166,8 @@ class AudioTrackSource {
                    size_t number_of_channels,
                    size_t samples_per_channel,
                    size_t queued_samples) RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
-    // Drops transformers whose sender is gone; returns the active ones.
     using PaddingTransformer = webrtc::RefCountedObject<OpusPaddingTransformer>;
+    // Drops transformers whose sender is gone; returns the active ones.
     std::vector<webrtc::scoped_refptr<PaddingTransformer>>
     ActivePaddingTransformers() RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 

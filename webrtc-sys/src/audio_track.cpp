@@ -250,8 +250,6 @@ void AudioTrackSource::InternalSource::SendChunk(const int16_t* data,
   const auto transformers = ActivePaddingTransformers();
 
   if (transformers.empty()) {
-    // No sender would carry the padding: the source is unpublished, is
-    // being republished, or was published without Opus padding.
     if (!pending_padding_.empty() && !warned_padding_dropped_) {
       RTC_LOG(LS_WARNING) << "Dropping Opus padding: no sender carries it (the "
                              "source is unpublished, or was published "

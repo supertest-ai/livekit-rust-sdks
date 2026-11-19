@@ -33,9 +33,6 @@ use crate::{
     peer_connection_factory::PeerConnectionFactory, rtp_receiver::RtpReceiver,
 };
 
-/// Reads the Opus padding of the audio `receiver` receives, so streams of its
-/// track carry it. For E2EE receivers, the frame cryptor reads it after
-/// decryption instead.
 pub fn attach_opus_padding_reader(factory: &PeerConnectionFactory, receiver: &RtpReceiver) {
     webrtc_sys::opus_padding_receiver::ffi::attach_opus_padding_reader(
         factory.handle.sys_handle.clone(),

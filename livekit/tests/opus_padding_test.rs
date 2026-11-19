@@ -160,7 +160,6 @@ async fn subscribe(events: &mut UnboundedReceiver<RoomEvent>) -> Result<NativeRe
     }
 }
 
-/// A received chunk.
 #[cfg(feature = "__lk-e2e-test")]
 struct Chunk {
     samples: Vec<i16>,

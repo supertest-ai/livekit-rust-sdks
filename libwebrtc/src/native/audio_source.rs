@@ -90,7 +90,6 @@ impl NativeAudioSource {
         self.sys_handle.clear_buffer();
     }
 
-    /// Writes Opus padding into the frames `sender` encodes.
     pub fn attach_opus_padding(&self, sender: &RtpSender) {
         self.sys_handle.attach_opus_padding(sender.sys_handle.clone());
     }
@@ -99,10 +98,6 @@ impl NativeAudioSource {
         self.capture(frame, &[]).await
     }
 
-    /// Like [`capture_frame`], and writes `opus_padding` verbatim as the Opus
-    /// padding of the encoded frame holding this frame's first sample.
-    ///
-    /// [`capture_frame`]: Self::capture_frame
     pub async fn capture_frame_with_opus_padding(
         &self,
         frame: &AudioFrame<'_>,

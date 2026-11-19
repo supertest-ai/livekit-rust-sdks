@@ -197,14 +197,10 @@ pub mod native {
 
         /// Like [`capture_frame`](Self::capture_frame), and writes
         /// `opus_padding` verbatim as the Opus padding of the encoded frame
-        /// holding this frame's first sample. Its size is not limited, but
-        /// packets much larger than ~1200 bytes may be dropped.
-        ///
-        /// Like other frame metadata, the padding is best-effort: it is
-        /// dropped, with a warning, while no sender carries it (before
-        /// publishing, during a full reconnect, or when the track was
-        /// published without `opus_padding`), and with audio the subscriber
-        /// conceals.
+        /// holding this frame's first sample, if the track was published with
+        /// `opus_padding`. Like other frame metadata, it is best-effort: dropped
+        /// while no sender carries it, and with audio the subscriber conceals.
+        /// Packets much larger than ~1200 bytes may be dropped.
         pub async fn capture_frame_with_opus_padding(
             &self,
             frame: &AudioFrame<'_>,

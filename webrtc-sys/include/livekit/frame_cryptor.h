@@ -195,8 +195,6 @@ class FrameCryptor {
       std::shared_ptr<PeerConnectionFactory> factory) const;
 
  private:
-  // Runs `transformer` before encryption on a sender, or after decryption on
-  // a receiver.
   void chain_inside_encryption(
       webrtc::scoped_refptr<webrtc::FrameTransformerInterface> transformer)
       const;
