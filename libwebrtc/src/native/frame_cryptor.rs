@@ -19,8 +19,9 @@ use parking_lot::Mutex;
 use webrtc_sys::frame_cryptor::{self as sys_fc};
 
 use crate::{
-    native::packet_trailer::PacketTrailerHandler, peer_connection_factory::PeerConnectionFactory,
-    rtp_receiver::RtpReceiver, rtp_sender::RtpSender,
+    audio_source::native::NativeAudioSource, native::packet_trailer::PacketTrailerHandler,
+    peer_connection_factory::PeerConnectionFactory, rtp_receiver::RtpReceiver,
+    rtp_sender::RtpSender,
 };
 
 pub type OnStateChange = Box<dyn FnMut(String, EncryptionState) + Send + Sync>;
@@ -217,6 +218,20 @@ impl FrameCryptor {
 
     pub fn set_packet_trailer_handler(&self, handler: &PacketTrailerHandler) {
         self.sys_handle.set_packet_trailer_handler(handler.sys_handle());
+    }
+
+    /// Writes `source`'s Opus padding into a sender's frames before they are
+    /// encrypted. See [`NativeAudioSource::attach_opus_padding`].
+    pub fn attach_opus_padding(&self, source: &NativeAudioSource) {
+        self.sys_handle.attach_opus_padding(source.handle.sys_handle.clone());
+    }
+
+    /// Reads the Opus padding of a receiver's frames after they are decrypted.
+    /// See [`attach_opus_padding_reader`].
+    ///
+    /// [`attach_opus_padding_reader`]: crate::audio_stream::native::attach_opus_padding_reader
+    pub fn attach_opus_padding_reader(&self, peer_factory: &PeerConnectionFactory) {
+        self.sys_handle.attach_opus_padding_reader(peer_factory.handle.sys_handle.clone());
     }
 }
 

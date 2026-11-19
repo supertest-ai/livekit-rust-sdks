@@ -18,13 +18,13 @@
 //! silence, one every `PERIOD` chunks. The first chunk of each burst carries
 //! padding naming that chunk. The subscriber finds each burst's onset in the
 //! decoded audio and checks that the burst's padding arrived just before it.
-//! Padding is best-effort: where no sender carries it, capturing still
-//! succeeds and the padding is dropped.
+//! Padding is opt-in on both sides, and best-effort: where no sender carries
+//! it, capturing still succeeds and the padding is dropped.
 
 #[cfg(feature = "__lk-e2e-test")]
 use {
     anyhow::{anyhow, ensure, Context, Result},
-    common::{test_rooms, test_rooms_with_options},
+    common::test_rooms_with_options,
     futures_util::{FutureExt, StreamExt},
     libwebrtc::{
         audio_source::native::NativeAudioSource,
@@ -228,17 +228,46 @@ fn check(chunks: &[Chunk], delivered: &BTreeMap<u32, usize>, expected: Range<u32
     Ok(())
 }
 
+/// A publisher's room, then a subscriber's room and its events.
 #[cfg(feature = "__lk-e2e-test")]
-async fn padding_arrives_with_its_audio(red: bool) -> Result<()> {
-    let mut rooms = test_rooms(2).await?;
+async fn rooms(
+    receive_opus_padding: bool,
+    e2ee: bool,
+) -> Result<(Room, Room, UnboundedReceiver<RoomEvent>)> {
+    let options = || {
+        let mut options = RoomOptions::default();
+        options.receive_opus_padding = receive_opus_padding;
+        if e2ee {
+            let key_provider =
+                KeyProvider::with_shared_key(KeyProviderOptions::default(), b"password".to_vec());
+            options.encryption =
+                Some(E2eeOptions { key_provider, encryption_type: EncryptionType::Gcm });
+        }
+        options.into()
+    };
+    let mut rooms = test_rooms_with_options([options(), options()]).await?;
     let (pub_room, _) = rooms.pop().unwrap();
-    let (_sub_room, mut sub_events) = rooms.pop().unwrap();
-    let options = TrackPublishOptions { red, dtx: false, ..Default::default() };
+    let (sub_room, sub_events) = rooms.pop().unwrap();
+    if e2ee {
+        pub_room.e2ee_manager().set_enabled(true);
+        sub_room.e2ee_manager().set_enabled(true);
+    }
+    Ok((pub_room, sub_room, sub_events))
+}
+
+#[cfg(feature = "__lk-e2e-test")]
+fn padded(red: bool) -> TrackPublishOptions {
+    TrackPublishOptions { red, dtx: false, opus_padding: true, ..Default::default() }
+}
+
+#[cfg(feature = "__lk-e2e-test")]
+async fn padding_arrives_with_its_audio(red: bool, e2ee: bool) -> Result<()> {
+    let (pub_room, _sub_room, mut sub_events) = rooms(true, e2ee).await?;
 
     // The second track has a new SSRC, and is received after the first
     // receiver's teardown.
     for _ in 0..2 {
-        let publication = Publication::new(&pub_room, options.clone(), CHUNKS).await?;
+        let publication = Publication::new(&pub_room, padded(red), CHUNKS).await?;
         // Slack for subscribing and the jitter buffer.
         let chunks = receive(&mut sub_events, CHUNKS + 200).await?;
         check(&chunks, &deliveries(&chunks, CHUNKS)?, STARTUP_CHUNKS..CHUNKS)?;
@@ -250,13 +279,46 @@ async fn padding_arrives_with_its_audio(red: bool) -> Result<()> {
 #[cfg(feature = "__lk-e2e-test")]
 #[test_log::test(tokio::test)]
 async fn test_opus_padding() -> Result<()> {
-    padding_arrives_with_its_audio(false).await
+    padding_arrives_with_its_audio(false, false).await
 }
 
 #[cfg(feature = "__lk-e2e-test")]
 #[test_log::test(tokio::test)]
 async fn test_opus_padding_red() -> Result<()> {
-    padding_arrives_with_its_audio(true).await
+    padding_arrives_with_its_audio(true, false).await
+}
+
+/// With E2EE, frames are padded before encryption and read after decryption.
+#[cfg(feature = "__lk-e2e-test")]
+#[test_log::test(tokio::test)]
+async fn test_opus_padding_e2ee() -> Result<()> {
+    padding_arrives_with_its_audio(false, true).await
+}
+
+/// Padding is sent only on tracks published with `opus_padding`, and read only
+/// in rooms with `receive_opus_padding`; the audio plays either way.
+#[cfg(feature = "__lk-e2e-test")]
+async fn padding_needs_both_options(publish: bool, read: bool) -> Result<()> {
+    let (pub_room, _sub_room, mut sub_events) = rooms(read, false).await?;
+    let options = TrackPublishOptions { opus_padding: publish, ..padded(false) };
+    let publication = Publication::new(&pub_room, options, CHUNKS).await?;
+    let chunks = receive(&mut sub_events, CHUNKS + 200).await?;
+    let loud = chunks.iter().flat_map(|c| &c.samples).any(|s| s.saturating_abs() > LOUD);
+    ensure!(loud, "no audio received");
+    ensure!(chunks.iter().all(|c| c.opus_padding.is_empty()), "padding received");
+    publication.unpublish(&pub_room).await
+}
+
+#[cfg(feature = "__lk-e2e-test")]
+#[test_log::test(tokio::test)]
+async fn test_opus_padding_off_when_publishing() -> Result<()> {
+    padding_needs_both_options(false, true).await
+}
+
+#[cfg(feature = "__lk-e2e-test")]
+#[test_log::test(tokio::test)]
+async fn test_opus_padding_off_when_receiving() -> Result<()> {
+    padding_needs_both_options(true, false).await
 }
 
 /// In a full reconnect, the publisher republishes its track, and the subscriber
@@ -264,11 +326,8 @@ async fn test_opus_padding_red() -> Result<()> {
 /// resumes on the new subscription.
 #[cfg(feature = "__lk-e2e-test")]
 async fn padding_resumes_after_full_reconnect(of_publisher: bool) -> Result<()> {
-    let mut rooms = test_rooms(2).await?;
-    let (pub_room, _) = rooms.pop().unwrap();
-    let (sub_room, mut sub_events) = rooms.pop().unwrap();
-    let mut publication =
-        Publication::new(&pub_room, TrackPublishOptions::default(), u32::MAX).await?;
+    let (pub_room, sub_room, mut sub_events) = rooms(true, false).await?;
+    let mut publication = Publication::new(&pub_room, padded(true), u32::MAX).await?;
     receive(&mut sub_events, 100).await?;
 
     let room = if of_publisher { &pub_room } else { &sub_room };
@@ -295,31 +354,4 @@ async fn test_opus_padding_publisher_full_reconnect() -> Result<()> {
 #[test_log::test(tokio::test)]
 async fn test_opus_padding_subscriber_full_reconnect() -> Result<()> {
     padding_resumes_after_full_reconnect(false).await
-}
-
-/// With E2EE, the frame cryptor holds each side's only frame transformer:
-/// padding is dropped, and the encrypted audio still plays.
-#[cfg(feature = "__lk-e2e-test")]
-#[test_log::test(tokio::test)]
-async fn test_opus_padding_e2ee() -> Result<()> {
-    let options = || {
-        let key_provider =
-            KeyProvider::with_shared_key(KeyProviderOptions::default(), b"password".to_vec());
-        let mut options = RoomOptions::default();
-        options.encryption =
-            Some(E2eeOptions { key_provider, encryption_type: EncryptionType::Gcm });
-        options.into()
-    };
-    let mut rooms = test_rooms_with_options([options(), options()]).await?;
-    let (pub_room, _) = rooms.pop().unwrap();
-    let (sub_room, mut sub_events) = rooms.pop().unwrap();
-    pub_room.e2ee_manager().set_enabled(true);
-    sub_room.e2ee_manager().set_enabled(true);
-
-    let publication = Publication::new(&pub_room, TrackPublishOptions::default(), CHUNKS).await?;
-    let chunks = receive(&mut sub_events, CHUNKS + 200).await?;
-    let loud = chunks.iter().flat_map(|c| &c.samples).any(|s| s.saturating_abs() > LOUD);
-    ensure!(loud, "no audio received");
-    ensure!(chunks.iter().all(|c| c.opus_padding.is_empty()), "padding received");
-    publication.unpublish(&pub_room).await
 }

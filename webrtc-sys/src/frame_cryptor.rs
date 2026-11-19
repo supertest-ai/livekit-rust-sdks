@@ -105,11 +105,13 @@ pub mod ffi {
         include!("livekit/rtp_receiver.h");
         include!("livekit/peer_connection_factory.h");
         include!("livekit/packet_trailer.h");
+        include!("livekit/audio_track.h");
 
         type RtpSender = crate::rtp_sender::ffi::RtpSender;
         type RtpReceiver = crate::rtp_receiver::ffi::RtpReceiver;
         type PeerConnectionFactory = crate::peer_connection_factory::ffi::PeerConnectionFactory;
         type PacketTrailerHandler = crate::packet_trailer::ffi::PacketTrailerHandler;
+        type AudioTrackSource = crate::audio_track::ffi::AudioTrackSource;
 
         pub type FrameCryptor;
 
@@ -149,6 +151,17 @@ pub mod ffi {
         pub fn set_packet_trailer_handler(
             self: &FrameCryptor,
             handler: SharedPtr<PacketTrailerHandler>,
+        );
+
+        /// Writes `source`'s Opus padding into a sender's frames before they
+        /// are encrypted.
+        pub fn attach_opus_padding(self: &FrameCryptor, source: SharedPtr<AudioTrackSource>);
+
+        /// Reads the Opus padding of a receiver's frames after they are
+        /// decrypted.
+        pub fn attach_opus_padding_reader(
+            self: &FrameCryptor,
+            factory: SharedPtr<PeerConnectionFactory>,
         );
     }
 

@@ -457,7 +457,8 @@ export declare class CaptureAudioFrameRequest extends Message<CaptureAudioFrameR
 
   /**
    * Written verbatim as the Opus padding of the encoded frame holding the
-   * buffer's first sample.
+   * buffer's first sample, if the track was published with opus_padding;
+   * dropped while no sender carries it.
    *
    * @generated from field: optional bytes opus_padding = 4;
    */
@@ -1347,7 +1348,8 @@ export declare class AudioFrameReceived extends Message<AudioFrameReceived> {
 
   /**
    * The Opus padding of each received packet whose first sample is in the
-   * frame, in order and byte for byte. Empty on E2EE tracks.
+   * frame, in order and byte for byte. Empty unless the room was created
+   * with receive_opus_padding.
    *
    * @generated from field: repeated bytes opus_padding = 2;
    */

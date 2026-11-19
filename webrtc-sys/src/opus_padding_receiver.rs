@@ -25,8 +25,8 @@ pub mod ffi {
     unsafe extern "C++" {
         include!("livekit/opus_padding_receiver.h");
 
-        /// Reads the Opus padding of the audio `receiver` receives. Not for
-        /// E2EE receivers.
+        /// Reads the Opus padding of the audio `receiver` receives. For E2EE
+        /// receivers, the frame cryptor reads it after decryption instead.
         fn attach_opus_padding_reader(
             factory: SharedPtr<PeerConnectionFactory>,
             receiver: SharedPtr<RtpReceiver>,

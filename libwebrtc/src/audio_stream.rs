@@ -120,8 +120,8 @@ pub mod native {
     /// Like [`NativeAudioStream`], and each frame carries the Opus padding of
     /// the received packets whose first sample falls in it.
     ///
-    /// Padding is read on tracks the room subscribes without E2EE; on other
-    /// tracks it is always empty.
+    /// Padding is read on audio tracks subscribed in a room with
+    /// `receive_opus_padding`; on other tracks it is always empty.
     pub struct NativeReceivedAudioStream {
         handle: stream_imp::NativeAudioStream,
     }
@@ -174,8 +174,11 @@ pub mod native {
     }
 
     /// Reads the Opus padding of the audio `receiver` receives, for
-    /// [`NativeReceivedAudioStream`]. Not for E2EE receivers: their frame
-    /// cryptor needs the receiver's only frame transformer.
+    /// [`NativeReceivedAudioStream`]. For E2EE receivers, use
+    /// [`FrameCryptor::attach_opus_padding_reader`] instead, which reads it
+    /// after decryption.
+    ///
+    /// [`FrameCryptor::attach_opus_padding_reader`]: crate::native::frame_cryptor::FrameCryptor::attach_opus_padding_reader
     pub fn attach_opus_padding_reader(factory: &PeerConnectionFactory, receiver: &RtpReceiver) {
         stream_imp::attach_opus_padding_reader(factory, receiver)
     }

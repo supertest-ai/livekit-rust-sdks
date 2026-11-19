@@ -40,6 +40,7 @@ enum class Algorithm : ::std::int32_t;
 class RtcFrameCryptorObserverWrapper;
 class NativeFrameCryptorObserver;
 class PacketTrailerHandler;
+class AudioTrackSource;
 
 /// Shared secret key for frame encryption.
 class KeyProvider {
@@ -184,7 +185,22 @@ class FrameCryptor {
   void set_packet_trailer_handler(
       std::shared_ptr<PacketTrailerHandler> handler) const;
 
+  /// Writes `source`'s Opus padding into the sender's frames before they are
+  /// encrypted.
+  void attach_opus_padding(std::shared_ptr<AudioTrackSource> source) const;
+
+  /// Reads the Opus padding of the receiver's frames after they are
+  /// decrypted.
+  void attach_opus_padding_reader(
+      std::shared_ptr<PeerConnectionFactory> factory) const;
+
  private:
+  // Runs `transformer` before encryption on a sender, or after decryption on
+  // a receiver.
+  void chain_inside_encryption(
+      webrtc::scoped_refptr<webrtc::FrameTransformerInterface> transformer)
+      const;
+
   std::shared_ptr<RtcRuntime> rtc_runtime_;
   const rust::String participant_id_;
   mutable webrtc::Mutex mutex_;

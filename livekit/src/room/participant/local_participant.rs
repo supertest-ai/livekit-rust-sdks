@@ -542,10 +542,10 @@ impl LocalParticipant {
             }
         }
 
-        // E2EE's frame cryptor uses the sender's only frame transformer.
+        // With E2EE, the E2EE manager pads frames before encrypting them.
         #[cfg(not(target_arch = "wasm32"))]
         if let LocalTrack::Audio(audio_track) = &track {
-            if self.local.encryption_type == EncryptionType::None {
+            if options.opus_padding && self.local.encryption_type == EncryptionType::None {
                 if let RtcAudioSource::Native(native_source) = audio_track.rtc_source() {
                     let sender = track.transceiver().unwrap().sender();
                     native_source.attach_opus_padding(&sender);

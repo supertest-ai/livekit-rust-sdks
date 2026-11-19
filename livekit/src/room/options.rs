@@ -164,6 +164,12 @@ pub struct TrackPublishOptions {
     /// - Screen share: `MaintainResolution` (clarity is critical for text/UI)
     /// - Other/unknown: `Balanced`
     pub degradation_preference: Option<DegradationPreference>,
+    /// Writes the Opus padding given to
+    /// [`NativeAudioSource::capture_frame_with_opus_padding`] into this audio
+    /// track's encoded frames. Has no effect on other tracks.
+    ///
+    /// [`NativeAudioSource::capture_frame_with_opus_padding`]: libwebrtc::audio_source::native::NativeAudioSource::capture_frame_with_opus_padding
+    pub opus_padding: bool,
 }
 
 impl Default for TrackPublishOptions {
@@ -183,6 +189,7 @@ impl Default for TrackPublishOptions {
             video_encoder: VideoEncoderBackend::Auto,
             scalability_mode: None,
             degradation_preference: None,
+            opus_padding: false,
         }
     }
 }

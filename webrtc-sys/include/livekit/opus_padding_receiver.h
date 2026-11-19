@@ -146,8 +146,8 @@ bool DeferSinkChunk(NativeAudioSink* sink,
                     size_t number_of_channels,
                     size_t number_of_frames);
 
-// Reads Opus padding on `receiver`. Not for E2EE receivers: their frame
-// cryptor needs the receiver's only frame transformer.
+// Reads Opus padding on `receiver`. For E2EE receivers, the frame cryptor
+// reads it after decryption instead.
 void attach_opus_padding_reader(std::shared_ptr<PeerConnectionFactory> factory,
                                 std::shared_ptr<RtpReceiver> receiver);
 

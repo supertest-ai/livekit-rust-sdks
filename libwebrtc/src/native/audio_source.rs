@@ -21,7 +21,7 @@ use crate::{audio_frame::AudioFrame, audio_source::AudioSourceOptions, RtcError,
 
 #[derive(Clone)]
 pub struct NativeAudioSource {
-    sys_handle: SharedPtr<sys_at::ffi::AudioTrackSource>,
+    pub(crate) sys_handle: SharedPtr<sys_at::ffi::AudioTrackSource>,
     sample_rate: u32,
     num_channels: u32,
     queue_size_samples: u32,
@@ -101,11 +101,6 @@ impl NativeAudioSource {
 
     /// Like [`capture_frame`], and writes `opus_padding` verbatim as the Opus
     /// padding of the encoded frame holding this frame's first sample.
-    ///
-    /// Like other frame metadata, the padding is best-effort: it is dropped,
-    /// with a warning, while no sender carries it (before publishing, during a
-    /// full reconnect, or on a track using end-to-end encryption), and with
-    /// audio the subscriber conceals.
     ///
     /// [`capture_frame`]: Self::capture_frame
     pub async fn capture_frame_with_opus_padding(

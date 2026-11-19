@@ -251,11 +251,11 @@ void AudioTrackSource::InternalSource::SendChunk(const int16_t* data,
 
   if (transformers.empty()) {
     // No sender would carry the padding: the source is unpublished, is
-    // being republished, or its track uses end-to-end encryption.
+    // being republished, or was published without Opus padding.
     if (!pending_padding_.empty() && !warned_padding_dropped_) {
       RTC_LOG(LS_WARNING) << "Dropping Opus padding: no sender carries it (the "
-                             "source is unpublished, or its track uses "
-                             "end-to-end encryption)";
+                             "source is unpublished, or was published "
+                             "without opus_padding)";
       warned_padding_dropped_ = true;
     }
     next_capture_ms_ = -1;

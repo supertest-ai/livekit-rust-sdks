@@ -21,6 +21,8 @@
 
 #include "absl/types/optional.h"
 #include "api/make_ref_counted.h"
+#include "livekit/audio_track.h"
+#include "livekit/opus_padding_receiver.h"
 #include "livekit/peer_connection.h"
 #include "livekit/peer_connection_factory.h"
 #include "livekit/packet_trailer.h"
@@ -217,6 +219,35 @@ void FrameCryptor::set_packet_trailer_handler(
     sender_->SetEncoderToPacketizerFrameTransformer(chained_transformer_);
   }
   if (receiver_) {
+    receiver_->SetDepacketizerToDecoderFrameTransformer(chained_transformer_);
+  }
+}
+
+void FrameCryptor::attach_opus_padding(
+    std::shared_ptr<AudioTrackSource> source) const {
+  if (sender_) {
+    chain_inside_encryption(source->get()->AddPaddingTransformer());
+  }
+}
+
+void FrameCryptor::attach_opus_padding_reader(
+    std::shared_ptr<PeerConnectionFactory> factory) const {
+  if (receiver_) {
+    chain_inside_encryption(webrtc::make_ref_counted<OpusPaddingReader>(
+        factory->opus_padding_registry()));
+  }
+}
+
+void FrameCryptor::chain_inside_encryption(
+    webrtc::scoped_refptr<webrtc::FrameTransformerInterface> transformer)
+    const {
+  if (sender_) {
+    chained_transformer_ = webrtc::make_ref_counted<ChainedFrameTransformer>(
+        transformer, e2ee_transformer_);
+    sender_->SetEncoderToPacketizerFrameTransformer(chained_transformer_);
+  } else if (receiver_) {
+    chained_transformer_ = webrtc::make_ref_counted<ChainedFrameTransformer>(
+        e2ee_transformer_, transformer);
     receiver_->SetDepacketizerToDecoderFrameTransformer(chained_transformer_);
   }
 }

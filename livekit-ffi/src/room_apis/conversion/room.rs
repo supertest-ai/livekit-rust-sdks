@@ -305,6 +305,8 @@ impl From<proto::RoomOptions> for RoomOptions {
         options.connect_timeout =
             value.connect_timeout_ms.map(Duration::from_millis).unwrap_or(options.connect_timeout);
         options.sdk_options.other_sdks = value.other_sdks;
+        options.receive_opus_padding =
+            value.receive_opus_padding.unwrap_or(options.receive_opus_padding);
         if let Some(data_stream) = value.data_stream {
             let mut data_stream_options = RoomDataStreamOptions::default();
             if let Some(max_payload_byte_length) = data_stream.max_payload_byte_length {
@@ -367,6 +369,7 @@ impl From<proto::TrackPublishOptions> for TrackPublishOptions {
                 .unwrap_or(default_publish_options.video_encoder),
             scalability_mode: opts.scalability_mode,
             degradation_preference: degradation_preference_from_proto(opts.degradation_preference),
+            opus_padding: opts.opus_padding.unwrap_or(default_publish_options.opus_padding),
         }
     }
 }
@@ -427,6 +430,20 @@ mod tests {
         let options = RoomOptions::from(proto::RoomOptions::default());
 
         assert!(options.sdk_options.other_sdks.is_none());
+    }
+
+    #[test]
+    fn opus_padding_is_off_by_default() {
+        assert!(!RoomOptions::from(proto::RoomOptions::default()).receive_opus_padding);
+        assert!(!TrackPublishOptions::from(proto::TrackPublishOptions::default()).opus_padding);
+    }
+
+    #[test]
+    fn opus_padding_round_trips() {
+        let room = proto::RoomOptions { receive_opus_padding: Some(true), ..Default::default() };
+        assert!(RoomOptions::from(room).receive_opus_padding);
+        let publish = proto::TrackPublishOptions { opus_padding: Some(true), ..Default::default() };
+        assert!(TrackPublishOptions::from(publish).opus_padding);
     }
 
     #[test]

@@ -451,6 +451,11 @@ pub struct RoomOptions {
     /// Timeout for each individual signal connection attempt
     pub connect_timeout: Duration,
     pub data_stream: RoomDataStreamOptions,
+    /// Reads the Opus padding of subscribed audio tracks, delivered by
+    /// [`NativeReceivedAudioStream`].
+    ///
+    /// [`NativeReceivedAudioStream`]: libwebrtc::audio_stream::native::NativeReceivedAudioStream
+    pub receive_opus_padding: bool,
 }
 
 impl Default for RoomOptions {
@@ -469,6 +474,7 @@ impl Default for RoomOptions {
             single_peer_connection: true,
             connect_timeout: SIGNAL_CONNECT_TIMEOUT,
             data_stream: Default::default(),
+            receive_opus_padding: false,
         }
     }
 }
@@ -2195,14 +2201,22 @@ impl RoomSession {
         participant.on_track_subscribed({
             let dispatcher = self.dispatcher.clone();
             let e2ee_manager = self.e2ee_manager.clone();
+            let receive_opus_padding = self.options.receive_opus_padding;
             move |participant, publication, track| {
                 let event = RoomEvent::TrackSubscribed {
                     participant: participant.clone(),
                     track: track.clone(),
                     publication: publication.clone(),
                 };
-                attach_opus_padding_reader(&track, &publication);
-                e2ee_manager.on_track_subscribed(track, publication, participant);
+                if receive_opus_padding {
+                    attach_opus_padding_reader(&track, &publication);
+                }
+                e2ee_manager.on_track_subscribed(
+                    track,
+                    publication,
+                    participant,
+                    receive_opus_padding,
+                );
                 dispatcher.dispatch(&event);
             }
         });
@@ -2561,8 +2575,8 @@ fn unpack_stream_id(stream_id: &str) -> Option<(&str, &str)> {
     }
 }
 
-/// Reads the Opus padding of a subscribed audio track, unless it uses E2EE:
-/// its frame cryptor needs the receiver's only frame transformer.
+/// Reads the Opus padding of a subscribed audio track. With E2EE, the E2EE
+/// manager reads it after decryption instead.
 fn attach_opus_padding_reader(track: &RemoteTrack, publication: &RemoteTrackPublication) {
     #[cfg(not(target_arch = "wasm32"))]
     if let RemoteTrack::Audio(_) = track {
