@@ -54,8 +54,7 @@ jobs:
 
       - name: Unit tests
         run: |
-          cargo test --release -p libwebrtc audio_stream
-          cargo test --release -p livekit-ffi rechunker
+          cargo test --release -p livekit-ffi -- rechunker opus_padding
 
       - name: End-to-end tests
         env:

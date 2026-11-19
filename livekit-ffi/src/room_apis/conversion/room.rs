@@ -433,13 +433,9 @@ mod tests {
     }
 
     #[test]
-    fn opus_padding_is_off_by_default() {
+    fn opus_padding_round_trips() {
         assert!(!RoomOptions::from(proto::RoomOptions::default()).receive_opus_padding);
         assert!(!TrackPublishOptions::from(proto::TrackPublishOptions::default()).opus_padding);
-    }
-
-    #[test]
-    fn opus_padding_round_trips() {
         let room = proto::RoomOptions { receive_opus_padding: Some(true), ..Default::default() };
         assert!(RoomOptions::from(room).receive_opus_padding);
         let publish = proto::TrackPublishOptions { opus_padding: Some(true), ..Default::default() };

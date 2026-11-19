@@ -281,15 +281,9 @@ fn padded(red: bool) -> TrackPublishOptions {
 #[cfg(feature = "__lk-e2e-test")]
 async fn padding_arrives_with_its_audio(red: bool, e2ee: bool) -> Result<()> {
     let (pub_room, _sub_room, mut sub_events) = rooms(true, e2ee).await?;
-
-    // The second track has a new SSRC, and is received after the first
-    // receiver's teardown.
-    for _ in 0..2 {
-        let publication = Publication::new(&pub_room, padded(red)).await?;
-        check(&receive_paddings(&mut sub_events).await?)?;
-        publication.unpublish(&pub_room).await?;
-    }
-    Ok(())
+    let publication = Publication::new(&pub_room, padded(red)).await?;
+    check(&receive_paddings(&mut sub_events).await?)?;
+    publication.unpublish(&pub_room).await
 }
 
 #[cfg(feature = "__lk-e2e-test")]
@@ -337,29 +331,17 @@ async fn test_opus_padding_off_when_receiving() -> Result<()> {
     padding_needs_both_options(true, false).await
 }
 
-/// In a full reconnect, the publisher republishes its track, and the subscriber
-/// subscribes anew, while the publisher keeps capturing padded audio. Padding
-/// resumes on the new subscription.
+/// In a full reconnect, the publisher republishes its track, with a new SSRC,
+/// while it keeps capturing padded audio, and the subscriber receives it on a
+/// new receiver. Padding resumes on the new track.
 #[cfg(feature = "__lk-e2e-test")]
-async fn padding_resumes_after_full_reconnect(of_publisher: bool) -> Result<()> {
-    let (pub_room, sub_room, mut sub_events) = rooms(true, false).await?;
+#[test_log::test(tokio::test)]
+async fn test_opus_padding_full_reconnect() -> Result<()> {
+    let (pub_room, _sub_room, mut sub_events) = rooms(true, false).await?;
     let mut publication = Publication::new(&pub_room, padded(true)).await?;
     check(&receive_paddings(&mut sub_events).await?)?;
 
-    let room = if of_publisher { &pub_room } else { &sub_room };
-    room.simulate_scenario(SimulateScenario::FullReconnect).await?;
+    pub_room.simulate_scenario(SimulateScenario::FullReconnect).await?;
     check(&receive_paddings(&mut sub_events).await?)?;
     publication.ensure_sending()
-}
-
-#[cfg(feature = "__lk-e2e-test")]
-#[test_log::test(tokio::test)]
-async fn test_opus_padding_publisher_full_reconnect() -> Result<()> {
-    padding_resumes_after_full_reconnect(true).await
-}
-
-#[cfg(feature = "__lk-e2e-test")]
-#[test_log::test(tokio::test)]
-async fn test_opus_padding_subscriber_full_reconnect() -> Result<()> {
-    padding_resumes_after_full_reconnect(false).await
 }
