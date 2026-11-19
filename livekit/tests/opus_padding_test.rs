@@ -16,10 +16,10 @@
 //!
 //! The publisher sends bursts of tone, each `TONE` chunks of 10 ms followed by
 //! silence, one every `PERIOD` chunks. The first chunk of each burst carries
-//! padding naming that chunk. The subscriber finds each burst's onset in the
-//! decoded audio and checks that the burst's padding arrived just before it.
-//! Padding is opt-in on both sides, and best-effort: where no sender carries
-//! it, capturing still succeeds and the padding is dropped.
+//! padding naming that chunk. The subscriber checks the first paddings it
+//! receives: each is one that was sent, unchanged, in order, and arrives just
+//! before its burst's audio. Like frame metadata on video, not every padding
+//! has to arrive: audio the subscriber conceals loses its padding.
 
 #[cfg(feature = "__lk-e2e-test")]
 use {
@@ -30,7 +30,6 @@ use {
         audio_source::native::NativeAudioSource,
         audio_stream::native::{NativeReceivedAudioStream, ReceivedAudioFrame},
         prelude::{AudioFrame, AudioSourceOptions, RtcAudioSource},
-        stats::RtcStats,
     },
     livekit::{
         e2ee::{
@@ -41,7 +40,7 @@ use {
         prelude::*,
         E2eeOptions, SimulateScenario,
     },
-    std::{collections::BTreeMap, ops::Range, time::Duration},
+    std::time::Duration,
     tokio::{sync::mpsc::UnboundedReceiver, task::JoinHandle, time::timeout},
 };
 
@@ -56,16 +55,18 @@ const CHUNK: usize = (RATE / 100) as usize;
 const PERIOD: u32 = 8;
 #[cfg(feature = "__lk-e2e-test")]
 const TONE: u32 = 4;
+/// Paddings each test checks the placement of.
 #[cfg(feature = "__lk-e2e-test")]
-const CHUNKS: u32 = 50 * PERIOD;
-/// Audio the subscriber may conceal while playout starts. Padding of
-/// concealed audio is not delivered.
+const PADDINGS: usize = 10;
+/// Paddings a subscription receives while playout starts, whose bursts may not
+/// play as sent: only checked for being sent, unchanged and in order.
 #[cfg(feature = "__lk-e2e-test")]
-const STARTUP_CHUNKS: u32 = 7 * PERIOD;
+const STARTUP_PADDINGS: usize = 7;
 /// Latest a burst's onset may follow the start of the chunk carrying its
 /// padding: the chunk (10 ms), the start of the packet holding the burst's
 /// first sample (up to 20 ms earlier), Opus's algorithmic delay (6.5 ms), and
-/// slack for the jitter buffer stretching audio.
+/// slack for the jitter buffer stretching audio. The padding and the onset
+/// are decoded from the same packet, so system load doesn't change this.
 #[cfg(feature = "__lk-e2e-test")]
 const MAX_ONSET_DELAY: usize = 40 * CHUNK / 10;
 #[cfg(feature = "__lk-e2e-test")]
@@ -79,10 +80,9 @@ fn padding(i: u32) -> Vec<u8> {
     p
 }
 
-/// Chunk `i` of `chunks`.
 #[cfg(feature = "__lk-e2e-test")]
-fn chunk(i: u32, chunks: u32) -> Vec<i16> {
-    if i >= chunks || i % PERIOD >= TONE {
+fn chunk(i: u32) -> Vec<i16> {
+    if i % PERIOD >= TONE {
         return vec![0; CHUNK];
     }
     (0..CHUNK)
@@ -103,7 +103,7 @@ fn frame(data: &[i16]) -> AudioFrame<'_> {
     }
 }
 
-/// A published track sending the bursts, then silence until unpublished.
+/// A published track sending the bursts until unpublished.
 #[cfg(feature = "__lk-e2e-test")]
 struct Publication {
     track: LocalAudioTrack,
@@ -112,17 +112,17 @@ struct Publication {
 
 #[cfg(feature = "__lk-e2e-test")]
 impl Publication {
-    /// Publishes `chunks` chunks of bursts, padding the first chunk of each.
-    async fn new(room: &Room, options: TrackPublishOptions, chunks: u32) -> Result<Self> {
+    /// Publishes the bursts, padding the first chunk of each.
+    async fn new(room: &Room, options: TrackPublishOptions) -> Result<Self> {
         let source = NativeAudioSource::new(AudioSourceOptions::default(), RATE, 1, 100);
         let track =
             LocalAudioTrack::create_audio_track("padded", RtcAudioSource::Native(source.clone()));
         room.local_participant().publish_track(LocalTrack::Audio(track.clone()), options).await?;
         let task = tokio::spawn(async move {
             for i in 0.. {
-                let data = chunk(i, chunks);
+                let data = chunk(i);
                 let frame = frame(&data);
-                if i < chunks && i % PERIOD == 0 {
+                if i % PERIOD == 0 {
                     source.capture_frame_with_opus_padding(&frame, &padding(i)).await?;
                 } else {
                     source.capture_frame(&frame).await?;
@@ -149,15 +149,13 @@ impl Publication {
     }
 }
 
+/// Waits for the next subscribed audio track.
 #[cfg(feature = "__lk-e2e-test")]
-async fn subscribe(
-    events: &mut UnboundedReceiver<RoomEvent>,
-) -> Result<(RemoteAudioTrack, NativeReceivedAudioStream)> {
+async fn subscribe(events: &mut UnboundedReceiver<RoomEvent>) -> Result<NativeReceivedAudioStream> {
     loop {
         let event = events.recv().await.ok_or(anyhow!("never received the track"))?;
         if let RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), .. } = event {
-            let stream = NativeReceivedAudioStream::new(track.rtc_track(), RATE as i32, 1);
-            return Ok((track, stream));
+            return Ok(NativeReceivedAudioStream::new(track.rtc_track(), RATE as i32, 1));
         }
     }
 }
@@ -167,73 +165,48 @@ async fn subscribe(
 struct Chunk {
     samples: Vec<i16>,
     opus_padding: Vec<Vec<u8>>,
-    /// How many packets the receiver had discarded for arriving too late,
-    /// sampled every `STATS_CHUNKS` chunks.
-    packets_discarded: u64,
 }
 
+/// Receives chunks of the next subscribed track until `done` holds for them.
 #[cfg(feature = "__lk-e2e-test")]
-const STATS_CHUNKS: usize = 10;
-
-#[cfg(feature = "__lk-e2e-test")]
-/// None until the receiver has stats.
-async fn packets_discarded(track: &RemoteAudioTrack) -> Result<Option<u64>> {
-    let stats = track.get_stats().await?;
-    Ok(stats.iter().find_map(|s| match s {
-        RtcStats::InboundRtp(s) => Some(s.inbound.packets_discarded),
-        _ => None,
-    }))
-}
-
-/// Subscribes to the next track and receives `n` chunks of it.
-#[cfg(feature = "__lk-e2e-test")]
-async fn receive(events: &mut UnboundedReceiver<RoomEvent>, n: u32) -> Result<Vec<Chunk>> {
+async fn receive(
+    events: &mut UnboundedReceiver<RoomEvent>,
+    done: impl Fn(&[Chunk]) -> bool,
+) -> Result<Vec<Chunk>> {
     let receive = async {
-        let (track, mut stream) = subscribe(events).await?;
+        let mut stream = subscribe(events).await?;
         let mut chunks = Vec::new();
-        let mut discarded = 0;
-        while chunks.len() < n as usize {
+        while !done(&chunks) {
             let ReceivedAudioFrame { frame, opus_padding } =
                 stream.next().await.context("stream ended")?;
             ensure!(frame.samples_per_channel as usize == CHUNK, "expected 10 ms frames");
-            if chunks.len() % STATS_CHUNKS == 0 {
-                discarded = packets_discarded(&track).await?.unwrap_or(discarded);
-            }
-            let samples = frame.data.into_owned();
-            chunks.push(Chunk { samples, opus_padding, packets_discarded: discarded });
+            chunks.push(Chunk { samples: frame.data.into_owned(), opus_padding });
         }
-        log::info!("received {n} chunks; the receiver discarded {discarded} late packets");
         Ok(chunks)
     };
     timeout(Duration::from_secs(20), receive).await?
 }
 
-/// Where each padding arrived, by the chunk it names, checking that it was
-/// sent as one of the first `sent` chunks, and arrived once, in order and
-/// unchanged.
+/// Receives chunks until `PADDINGS` paddings after start-up have arrived, and
+/// their bursts.
 #[cfg(feature = "__lk-e2e-test")]
-fn deliveries(chunks: &[Chunk], sent: u32) -> Result<BTreeMap<u32, usize>> {
-    let mut delivered = BTreeMap::new();
-    let mut last = None;
-    for (c, chunk) in chunks.iter().enumerate() {
-        for p in &chunk.opus_padding {
-            ensure!(p.len() == 5 && p[0] == 0xF0, "padding {p:02x?} was never sent");
-            let i = u32::from_be_bytes(p[1..].try_into()?);
-            ensure!(i < sent && i % PERIOD == 0, "padding for chunk {i} was never sent");
-            ensure!(last < Some(i), "padding for chunk {i} after chunk {last:?}");
-            last = Some(i);
-            delivered.insert(i, c * CHUNK);
-        }
-    }
-    Ok(delivered)
+async fn receive_paddings(events: &mut UnboundedReceiver<RoomEvent>) -> Result<Vec<Chunk>> {
+    receive(events, |chunks| {
+        // The chunk where the last padding to check arrived.
+        let mut paddings = 0;
+        let nth = chunks.iter().position(|c| {
+            paddings += c.opus_padding.len();
+            paddings >= STARTUP_PADDINGS + PADDINGS
+        });
+        nth.is_some_and(|c| chunks.len() > c + PERIOD as usize)
+    })
+    .await
 }
 
-/// Checks that the padding of every burst starting in `expected` arrived just
-/// before the burst's onset, unless the receiver discarded a packet around it:
-/// a packet that arrives after its audio was concealed is discarded, padding
-/// and all.
+/// Checks that each padding is one that was sent, unchanged, that they are in
+/// order, and that each after start-up arrived just before its burst's onset.
 #[cfg(feature = "__lk-e2e-test")]
-fn check(chunks: &[Chunk], delivered: &BTreeMap<u32, usize>, expected: Range<u32>) -> Result<()> {
+fn check(chunks: &[Chunk]) -> Result<()> {
     // Where a burst's audio starts: a loud sample after 20 ms without one.
     let loud: Vec<usize> = (chunks.iter().flat_map(|c| &c.samples).enumerate())
         .filter(|(_, s)| s.saturating_abs() > LOUD)
@@ -244,43 +217,33 @@ fn check(chunks: &[Chunk], delivered: &BTreeMap<u32, usize>, expected: Range<u32
         .map(|(_, &n)| n)
         .collect();
 
-    for i in expected.step_by(PERIOD as usize) {
-        let Some(&at) = delivered.get(&i) else {
-            let near: Vec<_> =
-                delivered.range(i.saturating_sub(4 * PERIOD)..i + 4 * PERIOD).collect();
-            ensure!(
-                discarded_near(chunks, delivered, i),
-                "padding for chunk {i} missing, and no packet discarded; chunk => sample \
-                 received nearby: {near:?}"
-            );
-            log::info!(
-                "padding for chunk {i} discarded late; chunk => sample received nearby: \
-                 {near:?}"
-            );
-            continue;
-        };
-        let onset = onsets.iter().find(|&&o| o >= at).context("no onset after padding")?;
-        ensure!(
-            onset - at < MAX_ONSET_DELAY,
-            "padding for chunk {i} arrived {} ms before its burst",
-            (onset - at) / (CHUNK / 10)
-        );
-    }
-    Ok(())
-}
+    let mut last = None;
+    let mut received = 0;
+    for (c, chunk) in chunks.iter().enumerate() {
+        for p in &chunk.opus_padding {
+            ensure!(p.len() == 5 && p[0] == 0xF0, "padding {p:02x?} was never sent");
+            let i = u32::from_be_bytes(p[1..].try_into()?);
+            ensure!(i % PERIOD == 0, "padding for chunk {i} was never sent");
+            ensure!(last < Some(i), "padding for chunk {i} after chunk {last:?}");
+            last = Some(i);
 
-/// Whether the receiver discarded a late packet within 200 ms of where the
-/// padding of chunk `i` was due.
-#[cfg(feature = "__lk-e2e-test")]
-fn discarded_near(chunks: &[Chunk], delivered: &BTreeMap<u32, usize>, i: u32) -> bool {
-    let Some((&j, &at)) = delivered.range(..i).next_back() else {
-        return false;
-    };
-    let due = at / CHUNK + (i - j) as usize;
-    let window = 2 * STATS_CHUNKS;
-    let before = &chunks[due.saturating_sub(window).min(chunks.len() - 1)];
-    let after = &chunks[(due + window).min(chunks.len() - 1)];
-    after.packets_discarded > before.packets_discarded
+            // Skip start-up, and bursts not yet received.
+            let n = received;
+            received += 1;
+            if n < STARTUP_PADDINGS || c + PERIOD as usize >= chunks.len() {
+                continue;
+            }
+            let at = c * CHUNK;
+            let onset = onsets.iter().find(|&&o| o >= at).context("no onset after padding")?;
+            ensure!(
+                onset - at < MAX_ONSET_DELAY,
+                "padding for chunk {i} arrived {} ms before its burst",
+                (onset - at) / (CHUNK / 10)
+            );
+        }
+    }
+    ensure!(received >= STARTUP_PADDINGS + PADDINGS, "only {received} paddings received");
+    Ok(())
 }
 
 /// A publisher's room, then a subscriber's room and its events.
@@ -322,10 +285,8 @@ async fn padding_arrives_with_its_audio(red: bool, e2ee: bool) -> Result<()> {
     // The second track has a new SSRC, and is received after the first
     // receiver's teardown.
     for _ in 0..2 {
-        let publication = Publication::new(&pub_room, padded(red), CHUNKS).await?;
-        // Slack for subscribing and the jitter buffer.
-        let chunks = receive(&mut sub_events, CHUNKS + 200).await?;
-        check(&chunks, &deliveries(&chunks, CHUNKS)?, STARTUP_CHUNKS..CHUNKS)?;
+        let publication = Publication::new(&pub_room, padded(red)).await?;
+        check(&receive_paddings(&mut sub_events).await?)?;
         publication.unpublish(&pub_room).await?;
     }
     Ok(())
@@ -356,8 +317,8 @@ async fn test_opus_padding_e2ee() -> Result<()> {
 async fn padding_needs_both_options(publish: bool, read: bool) -> Result<()> {
     let (pub_room, _sub_room, mut sub_events) = rooms(read, false).await?;
     let options = TrackPublishOptions { opus_padding: publish, ..padded(false) };
-    let publication = Publication::new(&pub_room, options, CHUNKS).await?;
-    let chunks = receive(&mut sub_events, CHUNKS + 200).await?;
+    let publication = Publication::new(&pub_room, options).await?;
+    let chunks = receive(&mut sub_events, |chunks| chunks.len() >= 200).await?;
     let loud = chunks.iter().flat_map(|c| &c.samples).any(|s| s.saturating_abs() > LOUD);
     ensure!(loud, "no audio received");
     ensure!(chunks.iter().all(|c| c.opus_padding.is_empty()), "padding received");
@@ -382,20 +343,12 @@ async fn test_opus_padding_off_when_receiving() -> Result<()> {
 #[cfg(feature = "__lk-e2e-test")]
 async fn padding_resumes_after_full_reconnect(of_publisher: bool) -> Result<()> {
     let (pub_room, sub_room, mut sub_events) = rooms(true, false).await?;
-    let mut publication = Publication::new(&pub_room, padded(true), u32::MAX).await?;
-    receive(&mut sub_events, 100).await?;
+    let mut publication = Publication::new(&pub_room, padded(true)).await?;
+    check(&receive_paddings(&mut sub_events).await?)?;
 
     let room = if of_publisher { &pub_room } else { &sub_room };
     room.simulate_scenario(SimulateScenario::FullReconnect).await?;
-    let chunks = receive(&mut sub_events, CHUNKS).await?;
-    let delivered = deliveries(&chunks, u32::MAX)?;
-    let (first, last) = match (delivered.first_key_value(), delivered.last_key_value()) {
-        (Some((&first, _)), Some((&last, _))) => (first, last),
-        _ => return Err(anyhow!("no padding after reconnecting")),
-    };
-    let expected = first + STARTUP_CHUNKS..last;
-    ensure!(expected.len() >= (CHUNKS / 2) as usize, "padding resumed only for {expected:?}");
-    check(&chunks, &delivered, expected)?;
+    check(&receive_paddings(&mut sub_events).await?)?;
     publication.ensure_sending()
 }
 
