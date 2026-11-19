@@ -64,7 +64,6 @@ pub mod ffi {
         ) -> bool;
         fn clear_buffer(self: &AudioTrackSource);
         fn attach_opus_padding(self: &AudioTrackSource, sender: SharedPtr<RtpSender>);
-        fn opus_padding_attached(self: &AudioTrackSource) -> bool;
         fn audio_options(self: &AudioTrackSource) -> AudioSourceOptions;
         fn set_audio_options(self: &AudioTrackSource, options: &AudioSourceOptions);
 
@@ -92,6 +91,7 @@ pub mod ffi {
             nb_channels: usize,
             nb_frames: usize,
         );
+        fn on_opus_padding(self: &AudioSinkWrapper, padding: &[u8]);
     }
 }
 
@@ -112,6 +112,10 @@ unsafe impl ExternType for CompleteCallback {
 
 pub trait AudioSink: Send {
     fn on_data(&self, data: &[i16], sample_rate: i32, nb_channels: usize, nb_frames: usize);
+
+    /// Receives the Opus padding of a packet whose first sample is in the
+    /// next [`on_data`](Self::on_data) chunk.
+    fn on_opus_padding(&self, _padding: &[u8]) {}
 }
 
 pub struct AudioSinkWrapper {
@@ -125,5 +129,9 @@ impl AudioSinkWrapper {
 
     fn on_data(&self, data: &[i16], sample_rate: i32, nb_channels: usize, nb_frames: usize) {
         self.observer.on_data(data, sample_rate, nb_channels, nb_frames);
+    }
+
+    fn on_opus_padding(&self, padding: &[u8]) {
+        self.observer.on_opus_padding(padding);
     }
 }

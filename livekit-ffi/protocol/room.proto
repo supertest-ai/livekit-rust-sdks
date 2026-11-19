@@ -326,6 +326,9 @@ message TrackPublishOptions {
   // Controls how the encoder trades off between resolution and framerate
   // when bandwidth is constrained. Default is MAINTAIN_RESOLUTION.
   optional DegradationPreference degradation_preference = 13;
+  // Write the Opus padding given to CaptureAudioFrameRequest into this audio
+  // track's encoded frames (default: false).
+  optional bool opus_padding = 14;
 }
 
 enum VideoEncoderBackend {
@@ -402,6 +405,9 @@ message RoomOptions {
   // Comma separated list of additional LiveKit SDKs layered on top of this one, with versions,
   // e.g. "components-js:1.2.3,track-processors-js:1.2.3". Forwarded to ClientInfo.other_sdks.
   optional string other_sdks = 11;
+  // Read the Opus padding of subscribed audio tracks into
+  // AudioFrameReceived.opus_padding (default: false).
+  optional bool receive_opus_padding = 12;
 }
 
 //

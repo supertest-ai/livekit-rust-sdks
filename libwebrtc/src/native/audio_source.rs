@@ -21,7 +21,7 @@ use crate::{audio_frame::AudioFrame, audio_source::AudioSourceOptions, RtcError,
 
 #[derive(Clone)]
 pub struct NativeAudioSource {
-    sys_handle: SharedPtr<sys_at::ffi::AudioTrackSource>,
+    pub(crate) sys_handle: SharedPtr<sys_at::ffi::AudioTrackSource>,
     sample_rate: u32,
     num_channels: u32,
     queue_size_samples: u32,
@@ -90,7 +90,6 @@ impl NativeAudioSource {
         self.sys_handle.clear_buffer();
     }
 
-    /// Writes Opus padding into the frames `sender` encodes.
     pub fn attach_opus_padding(&self, sender: &RtpSender) {
         self.sys_handle.attach_opus_padding(sender.sys_handle.clone());
     }
@@ -99,10 +98,6 @@ impl NativeAudioSource {
         self.capture(frame, &[]).await
     }
 
-    /// Like [`capture_frame`], and writes `opus_padding` verbatim as the Opus
-    /// padding of the encoded frame holding this frame's first sample.
-    ///
-    /// [`capture_frame`]: Self::capture_frame
     pub async fn capture_frame_with_opus_padding(
         &self,
         frame: &AudioFrame<'_>,
@@ -112,14 +107,6 @@ impl NativeAudioSource {
             return Err(RtcError {
                 error_type: RtcErrorType::InvalidState,
                 message: "Opus padding is empty".to_owned(),
-            });
-        }
-        if !self.sys_handle.opus_padding_attached() {
-            return Err(RtcError {
-                error_type: RtcErrorType::InvalidState,
-                message: "Opus padding is not attached to a sender: the source is not published, \
-                          or its track uses end-to-end encryption"
-                    .to_owned(),
             });
         }
         self.capture(frame, opus_padding).await

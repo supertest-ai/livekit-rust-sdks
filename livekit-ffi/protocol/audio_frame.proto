@@ -92,7 +92,8 @@ message CaptureAudioFrameRequest {
   required AudioFrameBufferInfo buffer = 2;
   optional uint64 request_async_id = 3;
   // Written verbatim as the Opus padding of the encoded frame holding the
-  // buffer's first sample.
+  // buffer's first sample, if the track was published with opus_padding;
+  // dropped while no sender carries it.
   optional bytes opus_padding = 4;
 }
 message CaptureAudioFrameResponse {
@@ -283,6 +284,10 @@ message AudioStreamEvent {
 
 message AudioFrameReceived {
   required OwnedAudioFrameBuffer frame = 1;
+  // The Opus padding of each received packet whose first sample is in the
+  // frame, in order and byte for byte. Empty unless the room was created
+  // with receive_opus_padding.
+  repeated bytes opus_padding = 2;
 }
 
 message AudioStreamEOS {}

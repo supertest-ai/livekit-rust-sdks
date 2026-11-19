@@ -37,6 +37,7 @@
 #include "api/audio_options.h"
 #include "livekit/adm_proxy.h"
 #include "livekit/audio_track.h"
+#include "modules/audio_mixer/audio_mixer_impl.h"
 #include "livekit/peer_connection.h"
 #include "livekit/rtc_error.h"
 #include "livekit/rtp_parameters.h"
@@ -195,6 +196,8 @@ PeerConnectionFactory::PeerConnectionFactory(
   dependencies.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();
   dependencies.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
   dependencies.audio_processing_builder = std::make_unique<webrtc::BuiltinAudioProcessingBuilder>();
+  dependencies.audio_mixer = webrtc::make_ref_counted<OpusPaddingAudioMixer>(
+      webrtc::AudioMixerImpl::Create(), opus_padding_registry_);
 
   webrtc::EnableMedia(dependencies);
   peer_factory_ =

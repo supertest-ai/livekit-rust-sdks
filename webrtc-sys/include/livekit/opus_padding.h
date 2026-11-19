@@ -21,6 +21,7 @@
 #include <deque>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "api/frame_transformer_interface.h"
@@ -28,6 +29,12 @@
 #include "rtc_base/synchronization/mutex.h"
 
 namespace livekit_ffi {
+
+// Offset of the primary block in a RED payload (RFC 2198).
+std::optional<size_t> RedPrimaryOffset(std::span<const uint8_t> red);
+
+// The padding of a code 3 Opus packet (RFC 6716, 3.2.5), or empty.
+std::span<const uint8_t> OpusPadding(std::span<const uint8_t> packet);
 
 // Writes caller-supplied bytes verbatim as the Opus padding (RFC 6716,
 // 3.2.5) of the frames one sender encodes. The source records every 10 ms

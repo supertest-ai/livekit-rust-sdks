@@ -74,7 +74,8 @@ class AudioTrack : public MediaStreamTrack {
   mutable std::vector<std::shared_ptr<NativeAudioSink>> sinks_;
 };
 
-class NativeAudioSink : public webrtc::AudioTrackSinkInterface {
+class NativeAudioSink : public webrtc::AudioTrackSinkInterface,
+                        public std::enable_shared_from_this<NativeAudioSink> {
  public:
   explicit NativeAudioSink(rust::Box<AudioSinkWrapper> observer,
                            int sample_rate,
@@ -84,6 +85,13 @@ class NativeAudioSink : public webrtc::AudioTrackSinkInterface {
               int sample_rate,
               size_t number_of_channels,
               size_t number_of_frames) override;
+
+  // Forwards a chunk, and before it the Opus paddings it carries.
+  void Deliver(const int16_t* data,
+               int sample_rate,
+               size_t number_of_channels,
+               size_t number_of_frames,
+               const std::vector<std::vector<uint8_t>>& opus_padding);
 
  private:
   rust::Box<AudioSinkWrapper> observer_;
@@ -132,7 +140,6 @@ class AudioTrackSource {
     void clear_buffer();
 
     webrtc::scoped_refptr<OpusPaddingTransformer> AddPaddingTransformer();
-    bool HasActivePaddingTransformer();
 
     // Indicate this is an external audio source (when external_audio_source.patch is applied).
     // This prevents AudioState from sending device audio to streams using this source.
@@ -151,8 +158,8 @@ class AudioTrackSource {
                    size_t number_of_channels,
                    size_t samples_per_channel,
                    size_t queued_samples) RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
-    // Drops transformers whose sender is gone; returns the active ones.
     using PaddingTransformer = webrtc::RefCountedObject<OpusPaddingTransformer>;
+    // Drops transformers whose sender is gone; returns the active ones.
     std::vector<webrtc::scoped_refptr<PaddingTransformer>>
     ActivePaddingTransformers() RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
@@ -174,6 +181,7 @@ class AudioTrackSource {
     int64_t next_capture_ms_ RTC_GUARDED_BY(mutex_) = -1;
     int64_t sent_samples_ RTC_GUARDED_BY(mutex_) = 0;
     std::deque<PendingPadding> pending_padding_ RTC_GUARDED_BY(mutex_);
+    bool warned_padding_dropped_ RTC_GUARDED_BY(mutex_) = false;
 
     int sample_rate_ = 0;
     int num_channels_ = 0;
@@ -205,8 +213,6 @@ class AudioTrackSource {
   void clear_buffer() const;
 
   void attach_opus_padding(std::shared_ptr<RtpSender> sender) const;
-
-  bool opus_padding_attached() const;
 
   webrtc::scoped_refptr<InternalSource> get() const;
 
